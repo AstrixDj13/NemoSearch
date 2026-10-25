@@ -1,0 +1,37 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 4% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 4% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 4% 10%;
+    --primary: 240 4% 10%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4% 96%;
+    --secondary-foreground: 240 4% 10%;
+    --muted: 240 4% 96%;
+    --muted-foreground: 240 3% 38%;
+    --accent: 240 4% 96%;
+    --accent-foreground: 240 4% 10%;
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 4% 88%;
+    --input: 240 4% 88%;
+    --ring: 240 4% 10%;
+    --radius: 0.75rem;
+  }
+
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+}
