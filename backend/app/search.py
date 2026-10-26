@@ -55,14 +55,21 @@ class Search:
         self.provider = "tavily" if self.tavily_key else "wikipedia"
         self.client = httpx.AsyncClient(timeout=30, headers=UA)
 
-    async def search(self, query: str, k: int = 4, focus: str = "web") -> list[dict]:
+    def providers(self) -> list[str]:
+        return ["tavily", "wikipedia"] if self.tavily_key else ["wikipedia"]
+
+    def resolve_provider(self, provider: str | None = None) -> str:
+        return provider if provider in self.providers() else self.provider
+
+    async def search(self, query: str, k: int = 4, focus: str = "web", provider: str | None = None) -> list[dict]:
+        provider = self.resolve_provider(provider)
         try:
-            if self.provider == "tavily":
+            if provider == "tavily":
                 return await self._tavily(query, k, focus)
             return await self._wikipedia(query, k)
         except Exception as e:  # noqa: BLE001
             log.warning("search failed for %r (focus=%s): %s", query, focus, e)
-            if self.provider == "tavily":
+            if provider == "tavily":
                 try:
                     return await self._wikipedia(query, k)
                 except Exception:  # noqa: BLE001

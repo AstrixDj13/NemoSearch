@@ -9,6 +9,7 @@ import {
   BrainCircuit,
   ChartNoAxesCombined,
   Check,
+  ChevronDown,
   ChevronRight,
   Clock3,
   Copy,
@@ -22,7 +23,8 @@ import {
   Menu,
   Network,
   Newspaper,
-  Paperclip,
+  PanelLeftClose,
+  PanelLeftOpen,
   PenLine,
   Plus,
   Presentation,
@@ -50,6 +52,44 @@ const focusOptions: { id: FocusMode; label: string; icon: typeof Globe2 }[] = [
 ]
 
 const stepIcons = [BrainCircuit, ScanSearch, BookOpen, ShieldCheck, PenLine]
+
+// Pipeline steps in run order; keys match the backend's per-step model overrides
+type TeamStep = 'planner' | 'scout' | 'reader' | 'critic' | 'writer'
+type TeamModels = Record<TeamStep, string>
+const teamSteps: { key: TeamStep; name: string }[] = [
+  { key: 'planner', name: 'Planner' },
+  { key: 'scout', name: 'Scout' },
+  { key: 'reader', name: 'Readers' },
+  { key: 'critic', name: 'Critic' },
+  { key: 'writer', name: 'Lead analyst' },
+]
+const recommendedTeam: TeamModels = {
+  planner: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+  scout: 'tavily',
+  reader: 'nvidia/nemotron-3-super-120b-a12b',
+  critic: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+  writer: 'nvidia/Nemotron-3-Ultra-550b-a55b',
+}
+const modelLabels: Record<string, string> = {
+  'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B': 'Nemotron 3 Nano · 30B',
+  'nvidia/nemotron-3-super-120b-a12b': 'Nemotron 3 Super · 120B',
+  'nvidia/Nemotron-3-Ultra-550b-a55b': 'Nemotron 3 Ultra · 550B',
+  tavily: 'Tavily AI Search',
+  wikipedia: 'Wikipedia Search',
+}
+const modelLabel = (id: string) => modelLabels[id] || id.split('/').pop() || id
+
+const loadTeamPrefs = (): { recommended: boolean; models: TeamModels } => {
+  try {
+    const stored = JSON.parse(localStorage.getItem('nemosearch_team') || 'null')
+    if (stored && typeof stored.recommended === 'boolean') {
+      return { recommended: stored.recommended, models: { ...recommendedTeam, ...stored.models } }
+    }
+  } catch {
+    // Fall back to the recommended team
+  }
+  return { recommended: true, models: recommendedTeam }
+}
 const viewNames: Record<View, string> = {
   home: 'New research',
   running: 'Research in progress',
@@ -65,6 +105,35 @@ const defaultSlides: SlideItem[] = [
   { num: '04', title: 'Beyond the architecture', bullets: ['IO-aware kernels and the complete serving system.'] },
   { num: '05', title: 'Recommendation', bullets: ['Benchmark the workload, not the parameter count.'] },
 ]
+
+// Shapes of the payloads sent by the FastAPI backend
+interface BackendSource {
+  id: number
+  title?: string
+  url?: string
+  domain?: string
+  quote?: string
+  summary?: string
+  snippet?: string
+  relevance?: number
+}
+
+interface BackendSlide {
+  title?: string
+  bullets?: string[]
+}
+
+const toSource = (s: BackendSource, fallbackRelevance = 85): Source => ({
+  id: s.id,
+  title: s.title || 'Untitled source',
+  authors: s.domain || 'Web source',
+  domain: s.domain || 'web',
+  url: s.url || '#',
+  relevance: typeof s.relevance === 'number' ? Math.round(s.relevance * 10) : fallbackRelevance,
+  quote: s.quote || s.snippet || s.summary || '',
+  summary: s.summary,
+  snippet: s.snippet,
+})
 
 function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -100,28 +169,161 @@ function Citation({ id, source, onOpen }: { id: number; source?: Source; onOpen:
   )
 }
 
+// Inline markdown: citations [1] / [1, 4], links, bold, italics and inline code
+const INLINE_TOKEN =
+  /(\[\d+(?:\s*,\s*\d+)*\](?!\()|\[[^\]\n]+\]\([^)\s]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\s][^*\n]*\*|(?<!\w)_[^_\s][^_\n]*_(?!\w))/g
+
 function InlineContent({ text, sourceMap, onOpenSource }: { text: string; sourceMap: Map<number, Source>; onOpenSource: (s: Source) => void }) {
-  // Parse inline citations e.g. [1], [2] as well as bold **text**
-  const citationParts = text.split(/(\[\d+\])/g)
-  return (
-    <>
-      {citationParts.map((part, pIdx) => {
-        const citeMatch = part.match(/^\[(\d+)\]$/)
-        if (citeMatch) {
-          const id = parseInt(citeMatch[1], 10)
-          return <Citation key={pIdx} id={id} source={sourceMap.get(id)} onOpen={onOpenSource} />
-        }
-        // Parse bold **text**
-        const boldParts = part.split(/(\*\*[^*]+\*\*)/g)
-        return boldParts.map((bPart, bIdx) => {
-          if (bPart.startsWith('**') && bPart.endsWith('**')) {
-            return <strong key={`${pIdx}-${bIdx}`}>{bPart.slice(2, -2)}</strong>
-          }
-          return bPart
+  const renderInline = (value: string, keyPrefix: string): ReactNode[] =>
+    value.split(INLINE_TOKEN).map((part, idx) => {
+      const key = `${keyPrefix}-${idx}`
+      if (!part) return null
+      const cite = part.match(/^\[(\d+(?:\s*,\s*\d+)*)\]$/)
+      if (cite) {
+        return cite[1].split(',').map((n) => {
+          const id = parseInt(n.trim(), 10)
+          return <Citation key={`${key}-${id}`} id={id} source={sourceMap.get(id)} onOpen={onOpenSource} />
         })
-      })}
-    </>
-  )
+      }
+      const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
+      if (link) {
+        const safe = /^https?:\/\//i.test(link[2])
+        return safe ? (
+          <a key={key} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], key)}</a>
+        ) : (
+          <span key={key}>{renderInline(link[1], key)}</span>
+        )
+      }
+      if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
+        return <strong key={key}>{renderInline(part.slice(2, -2), key)}</strong>
+      }
+      if (part.startsWith('`') && part.endsWith('`')) return <code key={key}>{part.slice(1, -1)}</code>
+      if (part.length > 2 && ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_')))) {
+        return <em key={key}>{renderInline(part.slice(1, -1), key)}</em>
+      }
+      return part
+    })
+
+  return <>{renderInline(text, 'i')}</>
+}
+
+type ReportBlock =
+  | { type: 'summary'; items: string[] }
+  | { type: 'heading'; level: 2 | 3; title: string }
+  | { type: 'p'; content: string }
+  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'quote'; content: string }
+  | { type: 'table'; header: string[]; rows: string[][] }
+  | { type: 'conclusion'; blocks: ReportBlock[] }
+
+const HEADING = /^(#{1,6})\s+(.*?)\s*#*$/
+const BULLET = /^[-*+]\s+/
+const ORDERED = /^\d+[.)]\s+/
+const RULE = /^([-*_])(\s*\1){2,}$/
+const isTableRow = (line: string) => line.startsWith('|') && line.endsWith('|') && line.length > 1
+const isTableDivider = (line: string) => /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line)
+const tableCells = (line: string) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim())
+const stripHeading = (text: string) => text.replace(/\*\*/g, '').trim()
+
+function parseReportBlocks(lines: string[]): ReportBlock[] {
+  const blocks: ReportBlock[] = []
+  let paragraph: string[] = []
+
+  const flushParagraph = () => {
+    const text = paragraph.join(' ').trim()
+    if (text) blocks.push({ type: 'p', content: text })
+    paragraph = []
+  }
+
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    const heading = line.match(HEADING)
+    const lower = line.toLowerCase()
+
+    if (/^(\*\*tl;dr:?\*\*:?|#{1,6}\s+tl;dr:?)$/.test(lower)) {
+      flushParagraph()
+      i++
+      while (i < lines.length && !lines[i].trim()) i++
+      const items: string[] = []
+      while (i < lines.length && (BULLET.test(lines[i].trim()) || ORDERED.test(lines[i].trim()))) {
+        items.push(lines[i].trim().replace(BULLET, '').replace(ORDERED, ''))
+        i++
+      }
+      blocks.push({ type: 'summary', items })
+      continue
+    }
+
+    if (heading) {
+      flushParagraph()
+      const level = heading[1].length
+      const title = stripHeading(heading[2])
+      i++
+      // The report title is already shown in the page header
+      if (level === 1) continue
+      if (level === 2 && /bottom line|conclusion/i.test(title)) {
+        const body: string[] = []
+        while (i < lines.length && !/^#{1,2}\s/.test(lines[i].trim())) body.push(lines[i++])
+        blocks.push({ type: 'conclusion', blocks: parseReportBlocks(body) })
+        continue
+      }
+      blocks.push({ type: 'heading', level: level === 2 ? 2 : 3, title })
+      continue
+    }
+
+    if (RULE.test(line)) {
+      flushParagraph()
+      i++
+      continue
+    }
+
+    if (isTableRow(line) && i + 1 < lines.length && isTableDivider(lines[i + 1].trim())) {
+      flushParagraph()
+      const header = tableCells(line)
+      i += 2
+      const rows: string[][] = []
+      while (i < lines.length && isTableRow(lines[i].trim())) rows.push(tableCells(lines[i++].trim()))
+      blocks.push({ type: 'table', header, rows })
+      continue
+    }
+
+    if (BULLET.test(line) || ORDERED.test(line)) {
+      flushParagraph()
+      const ordered = ORDERED.test(line)
+      const marker = ordered ? ORDERED : BULLET
+      const items: string[] = []
+      while (i < lines.length) {
+        const item = lines[i].trim()
+        if (marker.test(item)) {
+          items.push(item.replace(marker, ''))
+        } else if (BULLET.test(item) || ORDERED.test(item)) {
+          // Nested item of the other kind: keep it inside the current list
+          items.push(item.replace(BULLET, '').replace(ORDERED, ''))
+        } else if (item && !HEADING.test(item) && !isTableRow(item) && /^\s{2,}/.test(lines[i]) && items.length) {
+          items[items.length - 1] += ` ${item}`
+        } else {
+          break
+        }
+        i++
+      }
+      blocks.push({ type: 'list', ordered, items })
+      continue
+    }
+
+    if (line.startsWith('>')) {
+      flushParagraph()
+      const quote: string[] = []
+      while (i < lines.length && lines[i].trim().startsWith('>')) quote.push(lines[i++].trim().replace(/^>\s?/, ''))
+      blocks.push({ type: 'quote', content: quote.join(' ') })
+      continue
+    }
+
+    if (line === '') flushParagraph()
+    else paragraph.push(line)
+    i++
+  }
+  flushParagraph()
+  return blocks
 }
 
 function RenderReportBody({
@@ -139,160 +341,89 @@ function RenderReportBody({
     return map
   }, [sources])
 
-  const sections = useMemo(() => {
-    if (!markdown) return []
-    const lines = markdown.split('\n')
-    const parsed: { type: 'summary' | 'heading' | 'p' | 'list' | 'conclusion'; title?: string; items?: string[]; content?: string }[] = []
-    let currentParagraph: string[] = []
+  const blocks = useMemo(() => (markdown ? parseReportBlocks(markdown.split('\n')) : []), [markdown])
 
-    const flushParagraph = () => {
-      if (currentParagraph.length > 0) {
-        const text = currentParagraph.join(' ').trim()
-        if (text) {
-          parsed.push({ type: 'p', content: text })
-        }
-        currentParagraph = []
-      }
-    }
+  const inline = (text: string) => <InlineContent text={text} sourceMap={sourceMap} onOpenSource={onOpenSource} />
 
-    let i = 0
-    while (i < lines.length) {
-      const line = lines[i].trim()
-
-      if (line.startsWith('# ')) {
-        flushParagraph()
-        // Skip title as it's shown in header
-        i++
-        continue
-      }
-
-      if (line.startsWith('**TL;DR**') || line.startsWith('### TL;DR') || line.toLowerCase().startsWith('## tl;dr')) {
-        flushParagraph()
-        i++
-        const summaryBullets: string[] = []
-        while (i < lines.length && (lines[i].trim().startsWith('- ') || lines[i].trim().startsWith('* '))) {
-          summaryBullets.push(lines[i].trim().replace(/^[-*]\s+/, ''))
-          i++
-        }
-        parsed.push({ type: 'summary', items: summaryBullets })
-        continue
-      }
-
-      if (line.startsWith('## ')) {
-        flushParagraph()
-        const headingText = line.replace(/^##\s+/, '').replace(/\*\*/g, '')
-        if (headingText.toLowerCase().includes('bottom line') || headingText.toLowerCase().includes('conclusion')) {
-          i++
-          const conclusionLines: string[] = []
-          while (i < lines.length && !lines[i].trim().startsWith('## ')) {
-            if (lines[i].trim()) conclusionLines.push(lines[i].trim())
-            i++
-          }
-          parsed.push({ type: 'conclusion', content: conclusionLines.join(' ') })
-          continue
-        } else {
-          parsed.push({ type: 'heading', title: headingText })
-          i++
-          continue
-        }
-      }
-
-      if (line.startsWith('- ') || line.startsWith('* ')) {
-        flushParagraph()
-        const listItems: string[] = []
-        while (i < lines.length && (lines[i].trim().startsWith('- ') || lines[i].trim().startsWith('* '))) {
-          listItems.push(lines[i].trim().replace(/^[-*]\s+/, ''))
-          i++
-        }
-        parsed.push({ type: 'list', items: listItems })
-        continue
-      }
-
-      if (line === '') {
-        flushParagraph()
-      } else {
-        currentParagraph.push(line)
-      }
-      i++
-    }
-    flushParagraph()
-    return parsed
-  }, [markdown])
-
-  return (
-    <article className="report-article">
-      {sections.map((sec, idx) => {
-        if (sec.type === 'summary') {
-          return (
-            <section className="answer-summary" key={idx}>
-              <div className="section-label">The short answer</div>
-              {sec.items && sec.items.length > 0 ? (
-                <div style={{ marginTop: '14px', display: 'grid', gap: '8px' }}>
-                  {sec.items.map((it, iIdx) => (
-                    <p key={iIdx} style={{ margin: 0 }}>
-                      • <InlineContent text={it} sourceMap={sourceMap} onOpenSource={onOpenSource} />
-                    </p>
-                  ))}
-                </div>
-              ) : (
-                <p>
-                  <InlineContent text={sec.content || ''} sourceMap={sourceMap} onOpenSource={onOpenSource} />
-                </p>
-              )}
-            </section>
-          )
-        }
-
-        if (sec.type === 'heading') {
-          return (
-            <h2 key={idx} style={{ marginTop: '32px' }}>
-              {sec.title}
-            </h2>
-          )
-        }
-
-        if (sec.type === 'list') {
-          return (
-            <ul key={idx} style={{ margin: '0 0 16px 20px', color: 'oklch(0.31 0.006 260)', lineHeight: '1.75' }}>
-              {sec.items?.map((it, lIdx) => (
-                <li key={lIdx} style={{ marginBottom: '6px' }}>
-                  <InlineContent text={it} sourceMap={sourceMap} onOpenSource={onOpenSource} />
-                </li>
-              ))}
-            </ul>
-          )
-        }
-
-        if (sec.type === 'conclusion') {
-          return (
-            <div className="report-conclusion" key={idx} style={{ marginTop: '32px' }}>
-              <span className="section-label">Bottom line</span>
-              <p>
-                <InlineContent text={sec.content || ''} sourceMap={sourceMap} onOpenSource={onOpenSource} />
-              </p>
-            </div>
-          )
-        }
-
+  const renderBlock = (block: ReportBlock, idx: number): ReactNode => {
+    switch (block.type) {
+      case 'summary':
         return (
-          <p key={idx}>
-            <InlineContent text={sec.content || ''} sourceMap={sourceMap} onOpenSource={onOpenSource} />
-          </p>
+          <section className="answer-summary" key={idx}>
+            <div className="section-label">The short answer</div>
+            <div style={{ marginTop: '14px', display: 'grid', gap: '8px' }}>
+              {block.items.map((it, iIdx) => (
+                <p key={iIdx} style={{ margin: 0 }}>
+                  • {inline(it)}
+                </p>
+              ))}
+            </div>
+          </section>
         )
-      })}
-    </article>
-  )
+      case 'heading':
+        return block.level === 2 ? (
+          <h2 key={idx} style={{ marginTop: '32px' }}>{inline(block.title)}</h2>
+        ) : (
+          <h3 key={idx}>{inline(block.title)}</h3>
+        )
+      case 'list': {
+        const ListTag = block.ordered ? 'ol' : 'ul'
+        return (
+          <ListTag key={idx} className="report-list">
+            {block.items.map((it, lIdx) => (
+              <li key={lIdx}>{inline(it)}</li>
+            ))}
+          </ListTag>
+        )
+      }
+      case 'quote':
+        return <blockquote key={idx}>{inline(block.content)}</blockquote>
+      case 'table':
+        return (
+          <div className="report-table-wrap" key={idx}>
+            <table>
+              <thead>
+                <tr>{block.header.map((cell, cIdx) => <th key={cIdx}>{inline(cell)}</th>)}</tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, rIdx) => (
+                  <tr key={rIdx}>{row.map((cell, cIdx) => <td key={cIdx}>{inline(cell)}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      case 'conclusion':
+        return (
+          <div className="report-conclusion" key={idx} style={{ marginTop: '32px' }}>
+            <span className="section-label">Bottom line</span>
+            {block.blocks.map(renderBlock)}
+          </div>
+        )
+      default:
+        return <p key={idx}>{inline(block.content)}</p>
+    }
+  }
+
+  return <article className="report-article">{blocks.map(renderBlock)}</article>
 }
 
 export default function App() {
   const [view, setView] = useState<View>('home')
   const [query, setQuery] = useState('')
   const [submittedQuery, setSubmittedQuery] = useState(SAMPLE_QUERY)
-  const [focusMode, setFocusMode] = useState<FocusMode>('web')
+  const [focusMode] = useState<FocusMode>('web')
   const [deepMode, setDeepMode] = useState(true)
   const [runStep, setRunStep] = useState(0)
   const [elapsedTime, setElapsedTime] = useState(1)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('nemosearch_sidebar_collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
   const [reportTab, setReportTab] = useState<'brief' | 'sources' | 'reasoning'>('brief')
   const [selectedSource, setSelectedSource] = useState<Source | null>(null)
   const [slidesOpen, setSlidesOpen] = useState(false)
@@ -314,6 +445,17 @@ export default function App() {
   const [liveStats, setLiveStats] = useState<{ elapsed?: number; ttft?: number; nSources?: number; gaps?: string[] }>({})
   const [isLiveRun, setIsLiveRun] = useState(false)
   const [healthStatus, setHealthStatus] = useState<{ ok: boolean; provider?: string }>({ ok: true })
+
+  // Research team routing: recommended models, or a custom model per step
+  const [teamOpen, setTeamOpen] = useState(false)
+  const [teamDefaults, setTeamDefaults] = useState<TeamModels>(recommendedTeam)
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [providerOptions, setProviderOptions] = useState<string[]>(['tavily', 'wikipedia'])
+  const [useRecommended, setUseRecommended] = useState(() => loadTeamPrefs().recommended)
+  const [customTeam, setCustomTeam] = useState<TeamModels>(() => loadTeamPrefs().models)
+  const [teamAnnouncement, setTeamAnnouncement] = useState('')
+  const teamToggleRef = useRef<HTMLButtonElement>(null)
+  const teamModels = useRecommended ? teamDefaults : customTeam
 
   // Library persisted in localStorage
   const [libraryReports, setLibraryReports] = useState<SavedReport[]>(() => {
@@ -343,7 +485,25 @@ export default function App() {
       .then((res) => res.json())
       .then((data) => setHealthStatus({ ok: !!data.ok, provider: data.search_provider }))
       .catch(() => setHealthStatus({ ok: true, provider: 'tavily' }))
+    fetch('/api/models')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.defaults) setTeamDefaults({ ...recommendedTeam, ...data.defaults })
+        if (Array.isArray(data.models)) setModelOptions(data.models)
+        if (Array.isArray(data.search_providers)) setProviderOptions(data.search_providers)
+      })
+      .catch(() => {
+        // Keep the built-in recommended team
+      })
   }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nemosearch_team', JSON.stringify({ recommended: useRecommended, models: customTeam }))
+    } catch {
+      // Preference is optional
+    }
+  }, [useRecommended, customTeam])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -426,23 +586,40 @@ export default function App() {
     setLiveReasoning('')
     setLiveSources([])
     setLiveSteps([
-      { name: 'Planner', model: 'Nemotron 3 Nano · 30B', detail: 'Decomposing question into research paths...' },
-      { name: 'Scout', model: 'Tavily AI Search', detail: 'Preparing live search across primary sources...' },
-      { name: 'Readers', model: 'Nemotron 3 Super · 120B', detail: 'Standing by for parallel evidence extraction...' },
-      { name: 'Critic', model: 'Nemotron 3 Nano · 30B', detail: 'Queued to verify coverage & close gaps...' },
-      { name: 'Lead analyst', model: 'Nemotron 3 Ultra · 550B', detail: 'Queued for rigorous cited synthesis...' },
+      { name: 'Planner', model: modelLabel(teamModels.planner), detail: 'Decomposing question into research paths...' },
+      { name: 'Scout', model: modelLabel(teamModels.scout), detail: 'Preparing live search across primary sources...' },
+      { name: 'Readers', model: modelLabel(teamModels.reader), detail: 'Standing by for parallel evidence extraction...' },
+      { name: 'Critic', model: modelLabel(teamModels.critic), detail: 'Queued to verify coverage & close gaps...' },
+      { name: 'Lead analyst', model: modelLabel(teamModels.writer), detail: 'Queued for rigorous cited synthesis...' },
     ])
     setView('running')
 
     // Connect to real FastAPI SSE endpoint
-    const url = `/api/research?q=${encodeURIComponent(cleanQuery)}&depth=${deepMode ? 'deep' : 'quick'}&focus=${focusMode}`
+    const params = new URLSearchParams({ q: cleanQuery, depth: deepMode ? 'deep' : 'quick', focus: focusMode, ...teamOverrides() })
+    const url = `/api/research?${params}`
     let accumulatedReport = ''
     let accumulatedReasoning = ''
     let collectedSources: Source[] = []
+    let finished = false
 
     try {
       const es = new EventSource(url)
       activeEventSource.current = es
+
+      // Backend closes every stream with a named `end` event; without a `done` the run failed
+      es.addEventListener('end', () => {
+        es.close()
+        activeEventSource.current = null
+        if (finished) return
+        if (accumulatedReport) {
+          setRunStep(5)
+          setView('report')
+          setReportTab('brief')
+        } else {
+          setRunStep(0)
+          setView('home')
+        }
+      })
 
       es.onmessage = (event) => {
         try {
@@ -450,7 +627,7 @@ export default function App() {
           const data = JSON.parse(event.data)
 
           if (data.type === 'stage') {
-            const stageName = data.stage
+            const stageName = data.agent
             const status = data.status
             const detail = data.detail || ''
 
@@ -481,27 +658,15 @@ export default function App() {
               )
             }
           } else if (data.type === 'source') {
-            const src = data.source
-            collectedSources = [
-              ...collectedSources,
-              {
-                id: src.id,
-                title: src.title || 'Untitled source',
-                authors: src.domain || 'Web source',
-                domain: src.domain || 'web',
-                url: src.url || '#',
-                relevance: 85,
-                quote: src.snippet || '',
-                snippet: src.snippet || '',
-              },
-            ]
+            const src: BackendSource = data.source
+            collectedSources = [...collectedSources, toSource({ ...src, relevance: undefined })]
             setLiveSources([...collectedSources])
           } else if (data.type === 'note') {
             collectedSources = collectedSources.map((s) => {
               if (s.id === data.id) {
                 return {
                   ...s,
-                  relevance: data.relevance ? Math.round(data.relevance * 10) : s.relevance,
+                  relevance: typeof data.relevance === 'number' ? Math.round(data.relevance * 10) : s.relevance,
                   quote: data.quote || s.quote,
                   summary: data.summary || s.summary,
                 }
@@ -516,6 +681,7 @@ export default function App() {
             accumulatedReport += data.delta
             setLiveReport(accumulatedReport)
           } else if (data.type === 'done') {
+            finished = true
             es.close()
             activeEventSource.current = null
             setRunStep(5)
@@ -527,16 +693,7 @@ export default function App() {
 
             // Finalize sources list if backend provided complete map
             if (data.sources) {
-              const fullSources: Source[] = Object.values(data.sources).map((s: any) => ({
-                id: s.id,
-                title: s.title,
-                authors: s.domain,
-                domain: s.domain,
-                url: s.url,
-                relevance: s.relevance ? Math.round(s.relevance * 10) : 88,
-                quote: s.quote || s.summary || '',
-                summary: s.summary,
-              }))
+              const fullSources: Source[] = (Object.values(data.sources) as BackendSource[]).map((s) => toSource(s, 88))
               collectedSources = fullSources
               setLiveSources(fullSources)
             }
@@ -617,9 +774,38 @@ export default function App() {
     setView('report')
   }
 
-  const useSample = (value: string) => {
-    setQuery(value)
-    searchRef.current?.focus()
+  const changeTeamModel = (step: TeamStep, model: string) => {
+    const next = { ...teamModels, [step]: model }
+    const allRecommended = teamSteps.every(({ key }) => next[key] === teamDefaults[key])
+    setCustomTeam(next)
+    setUseRecommended(allRecommended)
+    const name = teamSteps.find((s) => s.key === step)?.name
+    setTeamAnnouncement(
+      `${name} now uses ${modelLabel(model)}. ${allRecommended ? 'All steps use recommended models.' : 'Custom team active.'}`
+    )
+  }
+
+  // Model overrides sent to the backend; empty when the recommended routing is on
+  const teamOverrides = (): Record<string, string> =>
+    useRecommended
+      ? {}
+      : {
+          planner_model: teamModels.planner,
+          reader_model: teamModels.reader,
+          critic_model: teamModels.critic,
+          writer_model: teamModels.writer,
+          search_provider: teamModels.scout,
+        }
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((collapsed) => {
+      try {
+        localStorage.setItem('nemosearch_sidebar_collapsed', collapsed ? '0' : '1')
+      } catch {
+        // Preference is optional
+      }
+      return !collapsed
+    })
   }
 
   const shareReport = async () => {
@@ -644,19 +830,20 @@ export default function App() {
       const res = await fetch('/api/slides', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: submittedQuery, report: reportTextToUse }),
+        body: JSON.stringify({ topic: submittedQuery, report: reportTextToUse, models: useRecommended ? {} : teamModels }),
       })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.slides && Array.isArray(data.slides)) {
-          setSlidesData(
-            data.slides.map((s: any, idx: number) => ({
-              num: `0${idx + 1}`,
-              title: s.title || `Key Point ${idx + 1}`,
-              bullets: s.bullets || [],
-            }))
-          )
-        }
+      const data = res.ok ? await res.json() : {}
+      if (Array.isArray(data.slides) && data.slides.length > 0) {
+        setSlidesData(
+          (data.slides as BackendSlide[]).map((s, idx) => ({
+            num: String(idx + 1).padStart(2, '0'),
+            title: s.title || `Key Point ${idx + 1}`,
+            bullets: s.bullets || [],
+          }))
+        )
+      } else {
+        setSlidesData(defaultSlides)
+        notify('Could not generate slides for this report. Showing the default outline.')
       }
     } catch {
       setSlidesData(defaultSlides)
@@ -692,10 +879,15 @@ export default function App() {
     setFollowUpSent(true)
     setFollowUpResponse('Reasoning over prior brief and evidence thread...')
 
-    const sourcesObj: Record<number, any> = {}
+    const sourcesObj: Record<number, BackendSource> = {}
     currentSources.forEach((s) => {
-      sourcesObj[s.id] = { id: s.id, title: s.title, url: s.url, domain: s.domain, quote: s.quote }
+      sourcesObj[s.id] = { id: s.id, title: s.title, url: s.url, domain: s.domain, quote: s.quote, summary: s.summary }
     })
+    // The sample brief is static markup, so send its evidence as the prior report text
+    const priorReport =
+      isLiveRun && liveReport
+        ? liveReport
+        : `# ${submittedQuery}\n\n` + currentSources.map((s) => `- ${s.title}: ${s.quote} [${s.id}]`).join('\n')
 
     try {
       const response = await fetch('/api/followup', {
@@ -704,12 +896,15 @@ export default function App() {
         body: JSON.stringify({
           question: cleanFollowUp,
           prior_question: submittedQuery,
-          prior_report: isLiveRun && liveReport ? liveReport : SAMPLE_QUERY,
+          prior_report: priorReport,
           sources: sourcesObj,
+          focus: focusMode,
+          models: useRecommended ? {} : teamModels,
+          search_provider: useRecommended ? undefined : teamModels.scout,
         }),
       })
 
-      if (!response.body) {
+      if (!response.ok || !response.body) {
         setFollowUpResponse('Unable to stream response from backend.')
         setFollowUpSending(false)
         return
@@ -718,26 +913,38 @@ export default function App() {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let accumulated = ''
+      let buffer = ''
 
       while (true) {
         const { value, done } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
+        // Network chunks can split an SSE line, so keep the unfinished tail for the next read
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6))
-              if (data.type === 'answer') {
-                if (accumulated === '') setFollowUpResponse('')
+              if (data.type === 'followup_delta' && data.kind === 'text') {
                 accumulated += data.delta
                 setFollowUpResponse(accumulated)
+              } else if (data.type === 'followup_status' && !accumulated) {
+                setFollowUpResponse(data.status)
+              } else if (data.type === 'source' && isLiveRun) {
+                const newSource = toSource({ ...(data.source as BackendSource), relevance: undefined })
+                setLiveSources((prev) => (prev.some((s) => s.id === newSource.id) ? prev : [...prev, newSource]))
+              } else if (data.type === 'error') {
+                setFollowUpResponse(`Agent notice: ${data.message}`)
               }
             } catch {
               // Ignore non-json
             }
           }
         }
+      }
+      if (!accumulated) {
+        setFollowUpResponse((prev) => (prev.startsWith('Agent notice') ? prev : 'No answer was returned. Please try again.'))
       }
     } catch {
       setFollowUpResponse(
@@ -755,7 +962,7 @@ export default function App() {
   )
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <DotField running={view === 'running'} />
 
       {sidebarOpen && (
@@ -769,34 +976,44 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-brand">
           <Logo />
+          <IconButton
+            label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </IconButton>
           <IconButton label="Close navigation" className="mobile-close" onClick={() => setSidebarOpen(false)}>
             <X size={19} />
           </IconButton>
         </div>
-        <button type="button" className="new-research-button" onClick={newResearch}>
-          <Plus size={17} /> New research <span>⌘ K</span>
+        <button type="button" className="new-research-button" onClick={newResearch} title="New research">
+          <Plus size={17} /> <span className="nav-label">New research</span> <span className="shortcut">⌘ K</span>
         </button>
         <nav className="primary-nav" aria-label="Primary navigation">
           <button
             type="button"
             className={view === 'home' || view === 'running' || view === 'report' ? 'active' : ''}
             onClick={newResearch}
+            title="Research"
           >
-            <Search size={17} /> Research
+            <Search size={17} /> <span className="nav-label">Research</span>
           </button>
           <button
             type="button"
             className={view === 'library' ? 'active' : ''}
             onClick={() => navigate('library')}
+            title="Library"
           >
-            <Library size={17} /> Library
+            <Library size={17} /> <span className="nav-label">Library</span>
           </button>
           <button
             type="button"
             className={view === 'activity' ? 'active' : ''}
             onClick={() => navigate('activity')}
+            title="Agent activity"
           >
-            <Activity size={17} /> Agent activity <span className="nav-live" />
+            <Activity size={17} /> <span className="nav-label">Agent activity</span>
           </button>
         </nav>
         <div className="recent-block">
@@ -813,20 +1030,17 @@ export default function App() {
             </button>
           ))}
         </div>
-        <button type="button" className="ensemble-status" onClick={() => navigate('activity')}>
-          <span className="status-orbit">
-            <span />
+        <div className="sidebar-profile">
+          <span className="workspace-avatar">NS</span>
+          <span className="nav-label">
+            <strong>NemoSearch</strong>
+            <small>{healthStatus.ok ? 'Nebius AI Cloud · Live' : 'Interactive preview'}</small>
           </span>
-          <span>
-            <strong>Nemotron 3 ensemble</strong>
-            <small>3 model tiers · ready</small>
-          </span>
-          <ArrowUpRight size={15} />
-        </button>
+        </div>
       </aside>
 
       <div className="workspace">
-        <header className="topbar">
+        <header className={`topbar ${view === 'home' ? 'topbar-home' : ''}`}>
           <div className="topbar-left">
             <IconButton label="Open navigation" className="mobile-menu" onClick={() => setSidebarOpen(true)}>
               <Menu size={20} />
@@ -842,7 +1056,6 @@ export default function App() {
             <span className="preview-badge">
               <span /> {healthStatus.ok ? 'Nebius AI Cloud · Live' : 'Interactive preview'}
             </span>
-            <span className="workspace-avatar">NS</span>
           </div>
         </header>
 
@@ -851,13 +1064,12 @@ export default function App() {
             <div className="home-grid">
               <section className="home-primary">
                 <div className="home-heading">
-                  <div className="section-label">Autonomous research, made visible</div>
                   <h1>
                     Research without
                     <br />
                     the black box.
                   </h1>
-                  <p>A focused team of Nemotron agents plans, searches, reads, and cites—so you can inspect every step.</p>
+                  <p>A focused team of Nemotron agents plans, searches, reads, and cites, so you can inspect every step.</p>
                 </div>
 
                 <form
@@ -896,7 +1108,7 @@ export default function App() {
                         onChange={(event) => setAttachment(event.target.files?.[0]?.name || '')}
                       />
                       <IconButton label="Attach a source file" onClick={() => fileRef.current?.click()}>
-                        <Paperclip size={18} />
+                        <Plus size={18} />
                       </IconButton>
                       <button
                         type="button"
@@ -916,83 +1128,106 @@ export default function App() {
                     </button>
                   </div>
                 </form>
-
-                <div className="focus-modes" aria-label="Research focus">
-                  {focusOptions.map((option) => {
-                    const Icon = option.icon
-                    return (
-                      <button
-                        type="button"
-                        key={option.id}
-                        className={focusMode === option.id ? 'selected' : ''}
-                        aria-pressed={focusMode === option.id}
-                        onClick={() => setFocusMode(option.id)}
-                      >
-                        <Icon size={16} />
-                        {option.label}
-                      </button>
-                    )
-                  })}
-                </div>
-
-                <div className="sample-section">
-                  <div className="sample-heading">
-                    <span className="section-label">Start with a research path</span>
-                    <span>3 curated prompts</span>
-                  </div>
-                  {[
-                    SAMPLE_QUERY,
-                    'Map the emerging stack for real-time multimodal agents',
-                    'How do inference costs change AI product margins?',
-                  ].map((sample, index) => (
-                    <button type="button" className="sample-row" key={sample} onClick={() => useSample(sample)}>
-                      <span className="sample-index">0{index + 1}</span>
-                      <span>{sample}</span>
-                      <ArrowRight size={17} />
-                    </button>
-                  ))}
-                </div>
               </section>
 
-              <aside className="research-team" aria-label="Research model routing">
-                <div className="team-heading">
-                  <span className="section-label">Your research team</span>
-                  <span className="live-label">
-                    <span /> Ready
+              <aside
+                className={`team-panel ${teamOpen ? 'open' : ''}`}
+                aria-labelledby="team-title"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && teamOpen) {
+                    event.stopPropagation()
+                    setTeamOpen(false)
+                    teamToggleRef.current?.focus()
+                  }
+                }}
+              >
+                <button
+                  ref={teamToggleRef}
+                  type="button"
+                  className="team-toggle"
+                  aria-expanded={teamOpen}
+                  aria-controls="team-steps"
+                  onClick={() => setTeamOpen((open) => !open)}
+                >
+                  <span className="team-toggle-title">
+                    <span className="section-label" id="team-title">Your research team</span>
+                    <span className={`team-status ${useRecommended ? '' : 'custom'}`}>
+                      <span aria-hidden="true" />
+                      {useRecommended ? 'Recommended models' : 'Custom models'}
+                    </span>
                   </span>
-                </div>
-                <p>
+                  <span className="team-toggle-hint" aria-hidden="true">
+                    {teamOpen ? 'Done' : 'Edit'}
+                    <ChevronDown size={14} className="team-chevron" />
+                  </span>
+                </button>
+                <p className="team-tagline">
                   Specialists at every step.
                   <br />
                   One shared evidence thread.
                 </p>
-                <div className="team-route">
-                  {defaultResearchSteps.map((step, index) => {
+
+                <ol className="team-steps" id="team-steps">
+                  {teamSteps.map((step, index) => {
                     const Icon = stepIcons[index]
+                    const isScout = step.key === 'scout'
+                    const current = teamModels[step.key]
+                    const recommended = teamDefaults[step.key]
+                    const edited = current !== recommended
+                    const options = isScout ? providerOptions : modelOptions
+                    const choices = [...new Set([current, ...options])].filter((m) => m !== recommended)
+                    const nemotron = choices.filter((m) => /nemotron/i.test(m))
+                    const others = choices.filter((m) => !/nemotron/i.test(m))
+                    const option = (m: string) => (
+                      <option key={m} value={m} title={m}>
+                        {modelLabel(m)}
+                      </option>
+                    )
                     return (
-                      <div className="team-node" key={step.name}>
-                        <div className="team-node-icon">
+                      <li className={`team-step ${edited ? 'edited' : ''}`} key={step.key}>
+                        <span className="team-step-icon" aria-hidden="true">
                           <Icon size={17} />
-                        </div>
-                        <div>
-                          <strong>
+                        </span>
+                        <div className="team-step-body">
+                          <label className="team-step-name" htmlFor={`team-model-${step.key}`}>
                             {step.name}
-                            {step.name === 'Readers' && <span> ×4</span>}
-                          </strong>
-                          <small>{step.model}</small>
+                            {step.key === 'reader' && <span> ×4</span>}
+                          </label>
+                          <div className={`team-reveal ${teamOpen ? '' : 'shown'}`} aria-hidden={teamOpen}>
+                            <span className="team-step-model">
+                              {modelLabel(current)}
+                              {edited && <em> · custom</em>}
+                            </span>
+                          </div>
+                          <div className={`team-reveal ${teamOpen ? 'shown' : ''}`} inert={!teamOpen}>
+                            <div className="team-select">
+                              <select
+                                id={`team-model-${step.key}`}
+                                value={current}
+                                onChange={(event) => changeTeamModel(step.key, event.target.value)}
+                              >
+                                <optgroup label="Recommended">{option(recommended)}</optgroup>
+                                {isScout ? (
+                                  choices.length > 0 && <optgroup label="Other search">{choices.map(option)}</optgroup>
+                                ) : (
+                                  <>
+                                    {nemotron.length > 0 && <optgroup label="NVIDIA Nemotron">{nemotron.map(option)}</optgroup>}
+                                    {others.length > 0 && <optgroup label="Other models">{others.map(option)}</optgroup>}
+                                  </>
+                                )}
+                              </select>
+                              <ChevronDown size={13} aria-hidden="true" />
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      </li>
                     )
                   })}
-                </div>
-                <div className="team-note">
-                  <Network size={17} />
-                  <span>
-                    Right model for the right task.
-                    <br />
-                    <strong>Nothing more. Nothing less.</strong>
-                  </span>
-                </div>
+                </ol>
+
+                <span className="visually-hidden" aria-live="polite">
+                  {teamAnnouncement}
+                </span>
               </aside>
             </div>
           )}
@@ -1151,7 +1386,7 @@ export default function App() {
                             <span className="section-label">
                               {followUpSending ? <LoaderCircle size={12} className="spin" /> : <Check size={12} />} Nemotron Analyst
                             </span>
-                            <p>{followUpResponse}</p>
+                            <RenderReportBody markdown={followUpResponse} sources={currentSources} onOpenSource={setSelectedSource} />
                           </div>
                         )}
                         <div>
@@ -1241,7 +1476,7 @@ export default function App() {
                             <span className="section-label">
                               {followUpSending ? <LoaderCircle size={12} className="spin" /> : <Check size={12} />} Nemotron Analyst
                             </span>
-                            <p>{followUpResponse}</p>
+                            <RenderReportBody markdown={followUpResponse} sources={currentSources} onOpenSource={setSelectedSource} />
                           </div>
                         )}
                         <div>
@@ -1486,7 +1721,7 @@ export default function App() {
                         <Icon size={19} />
                       </span>
                       <strong>{step.name}</strong>
-                      <span>{step.model}</span>
+                      <span>{modelLabel(teamModels[teamSteps[index].key])}</span>
                       <p>{step.detail}</p>
                       <span className="ledger-status">
                         <Check size={14} /> Ready

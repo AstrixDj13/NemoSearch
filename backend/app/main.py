@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -52,11 +53,14 @@ class FollowUpRequest(BaseModel):
     prior_report: str
     sources: dict = {}
     focus: str = "web"
+    models: dict = {}
+    search_provider: Optional[str] = None
 
 
 class SlidesRequest(BaseModel):
     topic: str
     report: str
+    models: dict = {}
 
 
 @app.get("/api/health")
@@ -64,15 +68,33 @@ async def health():
     return {"ok": True, **llm.info(), "search_provider": search.provider}
 
 
+@app.get("/api/models")
+async def models():
+    """Recommended routing per pipeline step plus everything the user may switch to."""
+    return {
+        "mock": llm.mock,
+        "defaults": {**llm.step_models(), "scout": search.provider},
+        "models": llm.chat_models(),
+        "search_providers": search.providers(),
+    }
+
+
 @app.get("/api/research")
 async def research(
     q: str = Query(..., min_length=3, max_length=500),
     depth: str = "quick",
     focus: str = "web",
+    planner_model: Optional[str] = None,
+    reader_model: Optional[str] = None,
+    critic_model: Optional[str] = None,
+    writer_model: Optional[str] = None,
+    search_provider: Optional[str] = None,
 ):
+    overrides = {"planner": planner_model, "reader": reader_model, "critic": critic_model, "writer": writer_model}
+
     async def gen():
         try:
-            async for ev in run_pipeline(q.strip(), depth, focus, llm, search):
+            async for ev in run_pipeline(q.strip(), depth, focus, llm, search, overrides, search_provider):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001
             logging.exception("pipeline failed")
@@ -91,7 +113,8 @@ async def followup(req: FollowUpRequest):
     async def gen():
         try:
             async for ev in answer_followup(
-                req.question, req.prior_question, req.prior_report, req.sources, llm, search, req.focus
+                req.question, req.prior_question, req.prior_report, req.sources, llm, search, req.focus,
+                req.models, req.search_provider,
             ):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001
@@ -109,7 +132,7 @@ async def followup(req: FollowUpRequest):
 @app.post("/api/slides")
 async def slides_endpoint(req: SlidesRequest):
     try:
-        data = await generate_slides(req.topic, req.report, llm)
+        data = await generate_slides(req.topic, req.report, llm, req.models)
         return JSONResponse(data)
     except Exception as e:  # noqa: BLE001
         logging.exception("slides generation failed")

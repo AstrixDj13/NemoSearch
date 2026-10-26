@@ -4,9 +4,10 @@ import { defineConfig } from "vite"
 import { inspectAttr } from 'kimi-plugin-inspect-react'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [inspectAttr(), react()],
+  // inspectAttr adds source-path attributes for the dev inspector; keep them out of production bundles
+  plugins: [command === 'serve' && inspectAttr(), react()],
   server: {
     port: 3000,
     proxy: {
@@ -25,4 +26,4 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-});
+}));

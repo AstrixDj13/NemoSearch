@@ -26,6 +26,8 @@ DEFAULT_MODELS = {
     "ultra": "nvidia/Nemotron-3-Ultra-550b-a55b",
 }
 ROLE_KEYWORDS = {"nano": ["nano"], "super": ["super"], "ultra": ["ultra"]}
+# Pipeline step -> model tier used when the user keeps the recommended routing
+STEP_ROLES = {"planner": "nano", "reader": "super", "critic": "nano", "writer": "ultra"}
 
 
 def thinking_kwargs(on: bool) -> dict:
@@ -169,6 +171,21 @@ class LLM:
             else:
                 log.warning("No Nemotron '%s' model found in catalog; keeping %s", role, mid)
 
+    def chat_models(self) -> list[str]:
+        """Models a user may pick for a pipeline step: the catalog minus embedding models, Nemotron first."""
+        catalog = self.available or list(dict.fromkeys(self.models.values()))
+        chat = [m for m in catalog if "embedding" not in m.lower()]
+        return sorted(chat, key=lambda m: ("nemotron" not in m.lower(), m.lower()))
+
+    def step_models(self, overrides: Optional[dict] = None) -> dict[str, str]:
+        """Resolves the model for each pipeline step, ignoring overrides that are not in the catalog."""
+        allowed = set(self.chat_models())
+        out = {}
+        for step, role in STEP_ROLES.items():
+            pick = str((overrides or {}).get(step) or "").strip()
+            out[step] = pick if pick and (pick in allowed or not self.available) else self.models[role]
+        return out
+
     def info(self) -> dict:
         return {"mock": self.mock, "base_url": self.base_url, "models": self.models}
 
@@ -183,6 +200,7 @@ class LLM:
         temperature: float = 0.3,
         thinking: bool = False,
         mock: Optional[Callable[[], str]] = None,
+        model: Optional[str] = None,
     ) -> str:
         t0 = time.perf_counter()
         if self.mock:
@@ -198,7 +216,7 @@ class LLM:
         for attempt in range(3):
             try:
                 resp = await self.client.chat.completions.create(
-                    model=self.models[role],
+                    model=model or self.models[role],
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
@@ -224,6 +242,7 @@ class LLM:
         temperature: float = 0.6,
         thinking: bool = True,
         mock: Optional[Callable[[], tuple[str, str]]] = None,
+        model: Optional[str] = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """Yields ("think" | "text", delta)."""
         t0 = time.perf_counter()
@@ -240,7 +259,7 @@ class LLM:
             return
 
         kwargs = dict(
-            model=self.models[role], messages=messages, max_tokens=max_tokens,
+            model=model or self.models[role], messages=messages, max_tokens=max_tokens,
             temperature=temperature, stream=True, **thinking_kwargs(thinking),
         )
         try:

@@ -21,7 +21,8 @@ def _sentences(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------- agents
-async def plan(llm: LLM, stats: RunStats, question: str, n: int, provider: str = "tavily", focus: str = "web") -> dict:
+async def plan(llm: LLM, stats: RunStats, question: str, n: int, provider: str = "tavily", focus: str = "web",
+               model: str | None = None) -> dict:
     focus_guide = {
         "academic": "Focus queries on scholarly, peer-reviewed papers, arXiv preprints, technical benchmarks, and methodology.",
         "finance": "Focus queries on SEC filings, market valuations, earnings, fiscal guidance, revenue metrics, and investor forecasts.",
@@ -51,7 +52,7 @@ async def plan(llm: LLM, stats: RunStats, question: str, n: int, provider: str =
         return json.dumps({"angle": "Survey background, then weigh recent evidence against known limitations.", "sub_queries": qs})
 
     raw = await llm.chat("nano", [{"role": "system", "content": sys}, {"role": "user", "content": question}],
-                         stats, max_tokens=600, temperature=0.4, mock=mock)
+                         stats, max_tokens=600, temperature=0.4, mock=mock, model=model)
     data = extract_json(raw) or {}
     queries = [q for q in data.get("sub_queries", []) if isinstance(q, str) and q.strip()][:n]
     if not queries:
@@ -59,7 +60,7 @@ async def plan(llm: LLM, stats: RunStats, question: str, n: int, provider: str =
     return {"angle": data.get("angle", ""), "sub_queries": queries}
 
 
-async def read(llm: LLM, stats: RunStats, question: str, src: dict) -> dict:
+async def read(llm: LLM, stats: RunStats, question: str, src: dict, model: str | None = None) -> dict:
     sys = (
         "You are a Precision Reader agent. Given a research question and one source document, extract only "
         "concrete evidence that helps answer the question. Prefer exact numbers, percentages, dates, and named entities.\n"
@@ -86,7 +87,7 @@ async def read(llm: LLM, stats: RunStats, question: str, src: dict) -> dict:
         })
 
     raw = await llm.chat("super", [{"role": "system", "content": sys}, {"role": "user", "content": user}],
-                         stats, max_tokens=800, temperature=0.2, mock=mock)
+                         stats, max_tokens=800, temperature=0.2, mock=mock, model=model)
     data = extract_json(raw) or {}
     try:
         rel = max(0, min(10, int(data.get("relevance", 0))))
@@ -106,7 +107,7 @@ async def read(llm: LLM, stats: RunStats, question: str, src: dict) -> dict:
     }
 
 
-async def critique(llm: LLM, stats: RunStats, question: str, notes: list[dict]) -> dict:
+async def critique(llm: LLM, stats: RunStats, question: str, notes: list[dict], model: str | None = None) -> dict:
     digest = "\n".join(f"[{n['id']}] (rel {n['relevance']}) {n['summary']}" for n in notes)
     sys = (
         "You are the Critic agent. Judge whether the collected evidence is sufficient to answer the "
@@ -121,7 +122,7 @@ async def critique(llm: LLM, stats: RunStats, question: str, notes: list[dict]) 
 
     raw = await llm.chat("nano", [{"role": "system", "content": sys},
                                   {"role": "user", "content": f"QUESTION: {question}\n\nEVIDENCE:\n{digest}"}],
-                         stats, max_tokens=500, mock=mock)
+                         stats, max_tokens=500, mock=mock, model=model)
     data = extract_json(raw) or {}
     return {
         "coverage": data.get("coverage", 0),
@@ -166,7 +167,8 @@ def _mock_report(question: str, sources: dict[int, dict], notes: list[dict], gap
 
 
 # ---------------------------------------------------------------- orchestrator
-async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: Search) -> AsyncIterator[dict]:
+async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: Search,
+                       models: dict | None = None, provider: str | None = None) -> AsyncIterator[dict]:
     t_start = time.perf_counter()
     stats = RunStats()
     deep = depth == "deep"
@@ -174,28 +176,30 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     sources: dict[int, dict] = {}
     seen_urls: set[str] = set()
     notes: list[dict] = []
+    step_models = llm.step_models(models)
+    provider = search.resolve_provider(provider)
 
-    def stage(agent: str, status: str, detail: str = "", role: str | None = None) -> dict:
+    def stage(agent: str, status: str, detail: str = "", step: str | None = None) -> dict:
         ev = {"type": "stage", "agent": agent, "status": status, "detail": detail}
-        if role:
-            ev["model"] = llm.models[role] if not llm.mock else f"{llm.models[role]} (mock)"
+        if step:
+            ev["model"] = step_models[step] if not llm.mock else f"{step_models[step]} (mock)"
         return ev
 
     yield {
         "type": "init", "question": question, "depth": depth, "focus": focus,
-        "mock": llm.mock, "models": llm.models, "search_provider": search.provider
+        "mock": llm.mock, "models": step_models, "search_provider": provider
     }
 
     # 1. PLAN -----------------------------------------------------------
-    yield stage("planner", "running", f"Decomposing question for {focus.upper()} focus", "nano")
-    p = await plan(llm, stats, question, n_queries, search.provider, focus)
+    yield stage("planner", "running", f"Decomposing question for {focus.upper()} focus", "planner")
+    p = await plan(llm, stats, question, n_queries, provider, focus, model=step_models["planner"])
     yield {"type": "plan", **p}
-    yield stage("planner", "done", f"{len(p['sub_queries'])} sub-queries", "nano")
+    yield stage("planner", "done", f"{len(p['sub_queries'])} sub-queries", "planner")
 
     async def scout_and_read(queries: list[str], round_no: int):
         # 2. SCOUT ------------------------------------------------------
-        yield stage("scout", "running", f"Round {round_no}: searching {len(queries)} queries via {search.provider} [{focus}]")
-        results = await asyncio.gather(*(search.search(q, 4 if deep else 3, focus) for q in queries))
+        yield stage("scout", "running", f"Round {round_no}: searching {len(queries)} queries via {provider} [{focus}]")
+        results = await asyncio.gather(*(search.search(q, 4 if deep else 3, focus, provider) for q in queries))
         new: list[dict] = []
         for batch in results:
             for r in batch:
@@ -214,13 +218,13 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         # 3. READ (parallel) ---------------------------------------------
         if not new:
             return
-        yield stage("reader", "running", f"Reading {len(new)} sources in parallel", "super")
+        yield stage("reader", "running", f"Reading {len(new)} sources in parallel", "reader")
         sem = asyncio.Semaphore(5)
 
         async def guarded(src):
             async with sem:
                 try:
-                    return await read(llm, stats, question, src)
+                    return await read(llm, stats, question, src, model=step_models["reader"])
                 except Exception as e:  # noqa: BLE001
                     return {
                         "id": src["id"], "relevance": 0, "summary": f"(read failed: {e})",
@@ -233,8 +237,8 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
             notes.append(note)
             done += 1
             yield {"type": "note", **note}
-            yield stage("reader", "running", f"Read {done}/{len(new)}", "super")
-        yield stage("reader", "done", f"{len(notes)} sources analysed", "super")
+            yield stage("reader", "running", f"Read {done}/{len(new)}", "reader")
+        yield stage("reader", "done", f"{len(notes)} sources analysed", "reader")
 
     async for ev in scout_and_read(p["sub_queries"], 1):
         yield ev
@@ -245,10 +249,10 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
 
     # 4. CRITIQUE -------------------------------------------------------
     relevant = sorted([n for n in notes if n["relevance"] >= 3], key=lambda n: -n["relevance"])
-    yield stage("critic", "running", "Checking evidence coverage & gaps", "nano")
-    c = await critique(llm, stats, question, relevant or notes)
+    yield stage("critic", "running", "Checking evidence coverage & gaps", "critic")
+    c = await critique(llm, stats, question, relevant or notes, model=step_models["critic"])
     yield {"type": "critique", **c}
-    yield stage("critic", "done", f"coverage {c['coverage']}/10", "nano")
+    yield stage("critic", "done", f"coverage {c['coverage']}/10", "critic")
 
     if deep and c["follow_up_queries"]:
         yield {"type": "plan", "angle": "Follow-up round to close identified gaps", "sub_queries": c["follow_up_queries"], "followup": True}
@@ -259,7 +263,7 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     evidence = relevant[:12] or sorted(notes, key=lambda n: -n["relevance"])[:8]
 
     # 5. WRITE (streamed, Ultra reasoning) --------------------------------
-    yield stage("writer", "running", "Synthesizing research brief with reasoning", "ultra")
+    yield stage("writer", "running", "Synthesizing research brief with reasoning", "writer")
     sys = (
         "You are the lead research analyst. Write a rigorous, authoritative research brief in GitHub Markdown "
         "answering the user question using ONLY the numbered evidence provided.\n"
@@ -282,12 +286,12 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     first_token = None
     async for kind, delta in llm.stream(
         "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user}], stats,
-        mock=lambda: _mock_report(question, sources, evidence, c["gaps"]),
+        mock=lambda: _mock_report(question, sources, evidence, c["gaps"]), model=step_models["writer"],
     ):
         if first_token is None:
             first_token = time.perf_counter() - t_w
         yield {"type": "think" if kind == "think" else "report", "delta": delta}
-    yield stage("writer", "done", "Report complete", "ultra")
+    yield stage("writer", "done", "Report complete", "writer")
 
     # Complete snapshot payload so frontend can hold thread memory
     yield {
@@ -346,9 +350,11 @@ def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: 
 
 
 async def answer_followup(question: str, prior_question: str, prior_report: str,
-                          sources: dict, llm: LLM, search: Search, focus: str = "web") -> AsyncIterator[dict]:
+                          sources: dict, llm: LLM, search: Search, focus: str = "web",
+                          models: dict | None = None, provider: str | None = None) -> AsyncIterator[dict]:
     """Interactive follow-up conversation answering specific questions grounded in prior report and sources."""
     stats = RunStats()
+    step_models = llm.step_models(models)
 
     # Determine if new search is needed or if prior evidence suffices
     eval_prompt = (
@@ -359,7 +365,7 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
         'Respond with ONLY JSON: {"needs_web_search": true/false, "search_query": "<if true, precise 4-8 word query, else empty>"}'
     )
     raw = await llm.chat("nano", [{"role": "user", "content": eval_prompt}], stats, max_tokens=250,
-                         mock=lambda: '{"needs_web_search": false, "search_query": ""}')
+                         mock=lambda: '{"needs_web_search": false, "search_query": ""}', model=step_models["planner"])
     data = extract_json(raw) or {}
     needs_search = data.get("needs_web_search", False)
     if isinstance(needs_search, str):
@@ -370,7 +376,7 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
     new_hits: list[dict] = []
     if needs_search is True and new_query:
         yield {"type": "followup_status", "status": f"Searching web for: '{new_query}'..."}
-        for i, h in enumerate(await search.search(new_query, k=3, focus=focus), start=max_id + 1):
+        for i, h in enumerate(await search.search(new_query, k=3, focus=focus, provider=provider), start=max_id + 1):
             h["id"] = i
             new_hits.append(h)
             yield {"type": "source", "source": {k: v for k, v in h.items() if k != "content"} | {"snippet": h["content"][:280]}}
@@ -400,7 +406,7 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
     async for kind, delta in llm.stream(
         "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user_msg}], stats,
         max_tokens=3000, temperature=0.4,
-        mock=lambda: _mock_followup(question, prior_question, sources, new_hits),
+        mock=lambda: _mock_followup(question, prior_question, sources, new_hits), model=step_models["writer"],
     ):
         yield {"type": "followup_delta", "kind": kind, "delta": delta}
 
@@ -421,7 +427,7 @@ def _mock_slides(topic: str, report: str) -> str:
     return json.dumps({"title": topic, "subtitle": "Executive research briefing (demo mode)", "slides": slides})
 
 
-async def generate_slides(topic: str, report: str, llm: LLM) -> dict:
+async def generate_slides(topic: str, report: str, llm: LLM, models: dict | None = None) -> dict:
     """Synthesizes a 5-slide executive presentation outline based on the generated research."""
     stats = RunStats()
     sys = (
@@ -444,6 +450,6 @@ async def generate_slides(topic: str, report: str, llm: LLM) -> dict:
     user = f"TOPIC: {topic}\n\nREPORT:\n{report[:6000]}"
     raw = await llm.chat("nano", [{"role": "system", "content": sys}, {"role": "user", "content": user}],
                          stats, max_tokens=1500, temperature=0.3,
-                         mock=lambda: _mock_slides(topic, report))
+                         mock=lambda: _mock_slides(topic, report), model=llm.step_models(models)["planner"])
     data = extract_json(raw) or {}
     return data
