@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable, Optional
 
-log = logging.getLogger("paperpilot.llm")
+log = logging.getLogger("nemosearch.llm")
 
 DEFAULT_MODELS = {
     "nano": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",

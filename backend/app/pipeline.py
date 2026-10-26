@@ -1,4 +1,4 @@
-"""PaperPilot multi-agent pipeline with Perplexity-grade capabilities:
+"""NemoSearch multi-agent pipeline with Perplexity-grade capabilities:
 - Focus modes (web, academic, finance, news)
 - Verbatim quote extraction for hover verification
 - Multi-turn Follow-up Q&A stream (Nemotron reasoning over prior report + evidence)
@@ -310,8 +310,43 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
 
 
 # ---------------------------------------------------------------- follow-up Q&A agent
+def _prior_sources_block(sources: dict) -> tuple[str, int]:
+    """Formats the sources of the prior report; returns (text, highest source id)."""
+    lines, max_id = [], 0
+    for key, s in sources.items():
+        if not isinstance(s, dict):
+            continue
+        try:
+            sid = int(s.get("id", key))
+        except (TypeError, ValueError):
+            continue
+        max_id = max(max_id, sid)
+        quote = f' Quote: "{s["quote"]}"' if s.get("quote") else ""
+        lines.append(f"[{sid}] {s.get('title', 'Untitled')} ({s.get('domain', '')}).{quote}")
+    return "\n".join(lines), max_id
+
+
+def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: list[dict]) -> tuple[str, str]:
+    think = (
+        f"The user follows up on \"{prior_question}\" asking \"{question}\". "
+        "Re-reading the prior brief and its verified quotes to answer with citations.\n"
+    )
+    cited = [s for s in sources.values() if isinstance(s, dict) and s.get("id")][:3]
+    bullets = "\n".join(
+        f"- {(s.get('summary') or s.get('quote') or s.get('title', ''))[:220]} [{s['id']}]" for s in cited
+    ) or "- The prior brief does not contain direct evidence on this point."
+    extra = "\n".join(f"- {h['title']} [{h['id']}]" for h in new_hits)
+    text = (
+        "> ⚠️ *Demo mode: generated without a Nebius API key.*\n\n"
+        f"**Short answer:** based on the prior research, here is what the evidence says about *{question.rstrip('?')}*.\n\n"
+        f"{bullets}\n"
+        + (f"\n**Additional sources found:**\n{extra}\n" if extra else "")
+    )
+    return think, text
+
+
 async def answer_followup(question: str, prior_question: str, prior_report: str,
-                          sources: dict, llm: LLM, search: Search) -> AsyncIterator[dict]:
+                          sources: dict, llm: LLM, search: Search, focus: str = "web") -> AsyncIterator[dict]:
     """Interactive follow-up conversation answering specific questions grounded in prior report and sources."""
     stats = RunStats()
 
@@ -323,38 +358,49 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
         f"EXISTING REPORT EXCERPT:\n{prior_report[:2000]}\n\n"
         'Respond with ONLY JSON: {"needs_web_search": true/false, "search_query": "<if true, precise 4-8 word query, else empty>"}'
     )
-    raw = await llm.chat("nano", [{"role": "user", "content": eval_prompt}], stats, max_tokens=250)
+    raw = await llm.chat("nano", [{"role": "user", "content": eval_prompt}], stats, max_tokens=250,
+                         mock=lambda: '{"needs_web_search": false, "search_query": ""}')
     data = extract_json(raw) or {}
     needs_search = data.get("needs_web_search", False)
-    new_query = data.get("search_query", "")
+    if isinstance(needs_search, str):
+        needs_search = needs_search.strip().lower() == "true"
+    new_query = str(data.get("search_query") or "").strip()
 
-    new_sources_text = ""
-    if needs_search and new_query:
+    prior_sources_text, max_id = _prior_sources_block(sources)
+    new_hits: list[dict] = []
+    if needs_search is True and new_query:
         yield {"type": "followup_status", "status": f"Searching web for: '{new_query}'..."}
-        hits = await search.search(new_query, k=3)
-        if hits:
-            new_sources_text = "\n\nADDITIONAL RECENT SOURCES:\n" + "\n".join(
-                f"- {h['title']} ({h['url']}): {h['content'][:1500]}" for h in hits
-            )
+        for i, h in enumerate(await search.search(new_query, k=3, focus=focus), start=max_id + 1):
+            h["id"] = i
+            new_hits.append(h)
+            yield {"type": "source", "source": {k: v for k, v in h.items() if k != "content"} | {"snippet": h["content"][:280]}}
+    new_sources_text = (
+        "\n\nADDITIONAL RECENT SOURCES:\n" + "\n".join(
+            f"[{h['id']}] {h['title']} ({h['url']}): {h['content'][:1500]}" for h in new_hits
+        ) if new_hits else ""
+    )
 
     yield {"type": "followup_status", "status": "Nemotron Ultra is reasoning..."}
 
     sys = (
         "You are an interactive AI research assistant having a continuous conversation with the user. "
         "Answer the user's follow-up question specifically, concisely, and factually based on the research report "
-        "and sources provided. Maintain bracketed citations [n] whenever referencing source material. "
+        "and numbered sources provided. Maintain bracketed citations [n] matching the source numbers whenever "
+        "referencing source material; never invent citation numbers. "
         "Format cleanly in Markdown with bold key takeaways."
     )
     user_msg = (
         f"ORIGINAL TOPIC: {prior_question}\n"
         f"PRIOR RESEARCH REPORT:\n{prior_report}\n"
-        f"{new_sources_text}\n\n"
+        + (f"\nPRIOR SOURCES:\n{prior_sources_text}\n" if prior_sources_text else "")
+        + f"{new_sources_text}\n\n"
         f"USER FOLLOW-UP QUESTION:\n{question}"
     )
 
     async for kind, delta in llm.stream(
         "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user_msg}], stats,
-        max_tokens=3000, temperature=0.4
+        max_tokens=3000, temperature=0.4,
+        mock=lambda: _mock_followup(question, prior_question, sources, new_hits),
     ):
         yield {"type": "followup_delta", "kind": kind, "delta": delta}
 
@@ -362,6 +408,19 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
 
 
 # ---------------------------------------------------------------- slide outline synthesizer
+def _mock_slides(topic: str, report: str) -> str:
+    import json
+    sections = re.findall(r"^##\s+(.+?)\n(.*?)(?=^##\s|\Z)", report, flags=re.M | re.S)
+    slides = []
+    for title, body in sections[:5]:
+        bullets = [re.sub(r"[*_`>]", "", b).strip() for b in re.findall(r"^[-*]\s+(.+)$", body, flags=re.M)]
+        if not bullets:
+            bullets = [s[:160] for s in _sentences(re.sub(r"[*_`>#]", "", body))]
+        slides.append({"slide_number": len(slides) + 1, "title": title.strip(),
+                       "bullets": bullets[:3] or ["See full report."], "takeaway": (bullets or [title])[0][:160]})
+    return json.dumps({"title": topic, "subtitle": "Executive research briefing (demo mode)", "slides": slides})
+
+
 async def generate_slides(topic: str, report: str, llm: LLM) -> dict:
     """Synthesizes a 5-slide executive presentation outline based on the generated research."""
     stats = RunStats()
@@ -384,6 +443,7 @@ async def generate_slides(topic: str, report: str, llm: LLM) -> dict:
     )
     user = f"TOPIC: {topic}\n\nREPORT:\n{report[:6000]}"
     raw = await llm.chat("nano", [{"role": "system", "content": sys}, {"role": "user", "content": user}],
-                         stats, max_tokens=1500, temperature=0.3)
+                         stats, max_tokens=1500, temperature=0.3,
+                         mock=lambda: _mock_slides(topic, report))
     data = extract_json(raw) or {}
     return data

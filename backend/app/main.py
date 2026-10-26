@@ -1,4 +1,4 @@
-"""PaperPilot API server (FastAPI) with Perplexity-grade endpoints:
+"""NemoSearch API server (FastAPI) with Perplexity-grade endpoints:
 - Streaming research pipeline (with focus & depth parameters)
 - Multi-turn Follow-up conversation streaming (/api/followup)
 - 5-Slide Executive Outline generation (/api/slides)
@@ -34,7 +34,7 @@ search = Search()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await llm.resolve_models()
-    logging.getLogger("paperpilot").info(
+    logging.getLogger("nemosearch").info(
         "Mode=%s models=%s search=%s",
         "MOCK" if llm.mock else "LIVE",
         llm.models,
@@ -51,6 +51,7 @@ class FollowUpRequest(BaseModel):
     prior_question: str
     prior_report: str
     sources: dict = {}
+    focus: str = "web"
 
 
 class SlidesRequest(BaseModel):
@@ -90,7 +91,7 @@ async def followup(req: FollowUpRequest):
     async def gen():
         try:
             async for ev in answer_followup(
-                req.question, req.prior_question, req.prior_report, req.sources, llm, search
+                req.question, req.prior_question, req.prior_report, req.sources, llm, search, req.focus
             ):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:  # noqa: BLE001

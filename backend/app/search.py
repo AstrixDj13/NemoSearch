@@ -8,10 +8,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-log = logging.getLogger("paperpilot.search")
+log = logging.getLogger("nemosearch.search")
 UA = {"User-Agent": (
-    "PaperPilot/1.0 (https://nebiusglobalaihackathon.devpost.com/; "
-    f"{os.getenv('CONTACT_EMAIL', 'paperpilot-hackathon@example.com')}) httpx/0.27"
+    "NemoSearch/1.0 (https://nebiusglobalaihackathon.devpost.com/; "
+    f"{os.getenv('CONTACT_EMAIL', 'nemosearch-hackathon@example.com')}) httpx/0.27"
 )}
 
 FOCUS_DOMAINS = {
