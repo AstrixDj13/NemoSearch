@@ -13,6 +13,7 @@ import time
 from typing import AsyncIterator
 
 from .llm import LLM, RunStats, extract_json
+from .scholar import generate_bibtex, sanitize_bib_key, search_academic_multi
 from .search import Search
 
 
@@ -199,7 +200,10 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     async def scout_and_read(queries: list[str], round_no: int):
         # 2. SCOUT ------------------------------------------------------
         yield stage("scout", "running", f"Round {round_no}: searching {len(queries)} queries via {provider} [{focus}]")
-        results = await asyncio.gather(*(search.search(q, 4 if deep else 3, focus, provider) for q in queries))
+        search_futs = [search.search(q, 4 if deep else 3, focus, provider) for q in queries]
+        if focus == "academic" and round_no == 1:
+            search_futs.append(search_academic_multi(question, limit=8))
+        results = await asyncio.gather(*search_futs)
         new: list[dict] = []
         for batch in results:
             for r in batch:
@@ -207,6 +211,14 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
                     continue
                 seen_urls.add(r["url"])
                 r["id"] = len(sources) + 1
+                if "bib_key" not in r:
+                    author_val = r.get("authors") or r.get("domain") or "ref"
+                    r["bib_key"] = sanitize_bib_key(author_val, 2024, r["title"])
+                if "bibtex" not in r:
+                    r["bibtex"] = generate_bibtex(
+                        r["bib_key"], r["title"], r.get("authors") or r.get("domain", "Web"),
+                        2024, r.get("venue", r.get("domain", "")), r.get("doi", ""), r["url"]
+                    )
                 sources[r["id"]] = r
                 new.append(r)
                 yield {
@@ -308,6 +320,11 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
                 "quote": next((n.get("quote", "") for n in notes if n["id"] == s["id"]), ""),
                 "summary": next((n.get("summary", "") for n in notes if n["id"] == s["id"]), ""),
                 "relevance": next((n.get("relevance", 0) for n in notes if n["id"] == s["id"]), 0),
+                "bib_key": s.get("bib_key", f"ref{s['id']}"),
+                "bibtex": s.get("bibtex", ""),
+                "authors": s.get("authors", s.get("domain", "")),
+                "doi": s.get("doi", ""),
+                "venue": s.get("venue", s.get("domain", "")),
             } for s in sources.values()
         }
     }

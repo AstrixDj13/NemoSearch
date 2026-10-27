@@ -35,6 +35,7 @@ import {
   X,
 } from 'lucide-react'
 import DotField from './components/DotField'
+import PaperStudio from './components/PaperStudio'
 import {
   defaultResearchSteps,
   recentReports as initialRecentReports,
@@ -96,6 +97,7 @@ const viewNames: Record<View, string> = {
   report: 'Research brief',
   library: 'Library',
   activity: 'Agent activity',
+  studio: 'Paper Studio',
 }
 
 const defaultSlides: SlideItem[] = [
@@ -1009,6 +1011,14 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={view === 'studio' ? 'active' : ''}
+            onClick={() => navigate('studio')}
+            title="Paper Studio (In-App LaTeX Engine)"
+          >
+            <GraduationCap size={17} /> <span className="nav-label">Paper Studio</span>
+          </button>
+          <button
+            type="button"
             className={view === 'activity' ? 'active' : ''}
             onClick={() => navigate('activity')}
             title="Agent activity"
@@ -1340,6 +1350,9 @@ export default function App() {
                   {liveStats.elapsed && <span>Completed in {liveStats.elapsed}s</span>}
                 </div>
                 <div className="report-actions">
+                  <button type="button" onClick={() => navigate('studio')} title="Draft full publication-grade LaTeX paper">
+                    <GraduationCap size={16} /> Paper Studio (LaTeX)
+                  </button>
                   <button type="button" onClick={() => window.print()}>
                     <FileText size={16} /> Export PDF
                   </button>
@@ -1744,6 +1757,15 @@ export default function App() {
                 </button>
               </div>
             </section>
+          )}
+
+          {view === 'studio' && (
+            <PaperStudio
+              topic={submittedQuery}
+              reportText={isLiveRun && liveReport ? liveReport : SAMPLE_QUERY}
+              sources={currentSources}
+              onNotify={notify}
+            />
           )}
         </main>
       </div>
