@@ -546,3 +546,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .studio-dual-pane { grid-template-columns: 1fr; }
 }
 
+/* AI Co-Author Human-in-the-Loop */
+.studio-coauthor-card { margin-top: 18px; padding: 16px 20px; border: 1px solid var(--hairline); border-radius: 14px; background: oklch(0.985 0.002 260); display: flex; flex-direction: column; gap: 12px; }
+.coauthor-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.coauthor-badge { display: inline-flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; color: var(--ink-100); text-transform: uppercase; }
+.coauthor-tip { font-size: 12px; color: var(--muted-text); }
+.coauthor-input-row { display: flex; align-items: center; gap: 10px; }
+.coauthor-text-input { flex: 1; height: 40px; padding: 0 14px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--paper); font-size: 13px; color: var(--ink-100); outline: 0; transition: border-color 160ms; }
+.coauthor-text-input:focus { border-color: var(--ink-100); }
+.coauthor-pills-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; }
+.pills-label { color: var(--muted-text); font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; }
+.coauthor-pill-btn { padding: 4px 10px; border: 1px solid var(--hairline); border-radius: 16px; background: var(--paper); color: var(--ink-100); font-size: 11px; transition: border-color 160ms, transform 160ms; }
+.coauthor-pill-btn:hover:not(:disabled) { border-color: var(--ink-100); transform: translateY(-1px); }
+.coauthor-pill-btn:disabled { opacity: 0.5; }
+
+

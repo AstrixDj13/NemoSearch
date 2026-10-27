@@ -1764,6 +1764,7 @@ export default function App() {
               topic={submittedQuery}
               reportText={isLiveRun && liveReport ? liveReport : SAMPLE_QUERY}
               sources={currentSources}
+              savedReports={libraryReports}
               onNotify={notify}
             />
           )}

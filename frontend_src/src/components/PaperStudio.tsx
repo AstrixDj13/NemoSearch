@@ -7,27 +7,40 @@ import {
   FileCode,
   FolderArchive,
   GraduationCap,
+  History,
   Layers,
   LoaderCircle,
   Plus,
   RefreshCw,
+  Sparkles,
   Upload,
+  Wand2,
   X,
 } from 'lucide-react'
 import { defaultTemplates } from '../data'
-import type { PaperTemplate, Source } from '../data'
+import type { PaperTemplate, SavedReport, Source } from '../data'
 
 interface PaperStudioProps {
   topic: string
   reportText: string
   sources: Source[]
+  savedReports?: SavedReport[]
   onNotify: (msg: string) => void
 }
+
+const QUICK_PROMPTS = [
+  { label: '📐 Formal Math Derivations', prompt: 'Derive formal mathematical equations for the computational cost and routing objective in \\begin{equation} blocks' },
+  { label: '📊 Comparative Benchmark Table', prompt: 'Add a clean LaTeX table comparing FLOPs, memory bounds, routing latency, and accuracy across architectures' },
+  { label: '🔍 Deepen Related Work & Citations', prompt: 'Expand the Related Work section, rigorously comparing our framework against foundational literature with \\cite{}' },
+  { label: '⚙️ Add Algorithmic Pseudocode', prompt: 'Add an algorithm environment with algorithmicx defining the complete step-by-step routing and inference procedure' },
+  { label: '⚖️ Expand Critical Trade-offs', prompt: 'Deepen the Discussion and Limitations section, analyzing GPU memory bandwidth bottlenecks and batch-size variations' },
+]
 
 export default function PaperStudio({
   topic,
   reportText,
   sources,
+  savedReports = [],
   onNotify,
 }: PaperStudioProps) {
   const [templates, setTemplates] = useState<PaperTemplate[]>(defaultTemplates)
@@ -36,13 +49,31 @@ export default function PaperStudio({
   const [latexCode, setLatexCode] = useState<string>('')
   const [bibtexCode, setBibtexCode] = useState<string>('')
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
+  const [isRefining, setIsRefining] = useState<boolean>(false)
   const [installModalOpen, setInstallModalOpen] = useState<boolean>(false)
+
+  // Dynamic Topic Selection linked to Recent Research / Library
+  const [currentTopic, setCurrentTopic] = useState<string>(topic || 'Dense vs. mixture-of-experts models for efficient inference')
+  const [currentReport, setCurrentReport] = useState<string>(reportText || '')
+  const [currentSources, setCurrentSources] = useState<Source[]>(sources || [])
+
+  // Human-in-the-loop steering prompt
+  const [humanInstruction, setHumanInstruction] = useState<string>('')
 
   // Custom template form states
   const [customName, setCustomName] = useState('')
   const [customVenue, setCustomVenue] = useState('')
   const [customDocClass, setCustomDocClass] = useState('\\documentclass[11pt,a4paper]{article}')
   const [customPreamble, setCustomPreamble] = useState('\\usepackage{amsmath,amssymb,booktabs,graphicx,hyperref}')
+
+  // Sync when prop topic changes
+  useEffect(() => {
+    if (topic && topic !== currentTopic) {
+      setCurrentTopic(topic)
+      setCurrentReport(reportText)
+      setCurrentSources(sources)
+    }
+  }, [topic, reportText, sources])
 
   // Fetch installed templates from backend
   useEffect(() => {
@@ -56,14 +87,35 @@ export default function PaperStudio({
       .catch(() => {})
   }, [])
 
-  // Auto-generate or set default LaTeX paper draft when component mounts or topic changes
+  // Auto-generate paper on mount or when current topic changes
   useEffect(() => {
     if (!latexCode) {
-      generatePaper(selectedTemplateId)
+      generatePaper(selectedTemplateId, currentTopic, currentReport, currentSources)
     }
-  }, [topic])
+  }, [currentTopic])
 
-  const generatePaper = async (templateId = selectedTemplateId) => {
+  const handleTopicSelect = (selectedTitle: string) => {
+    const found = savedReports.find((r) => r.title === selectedTitle)
+    if (found) {
+      setCurrentTopic(found.title)
+      const reportTxt = found.reportText || ''
+      setCurrentReport(reportTxt)
+      const srcList = found.sourcesData && found.sourcesData.length > 0 ? found.sourcesData : sources
+      setCurrentSources(srcList)
+      onNotify(`Switched to research topic: "${found.title}". Synthesizing draft...`)
+      generatePaper(selectedTemplateId, found.title, reportTxt, srcList)
+    } else {
+      setCurrentTopic(selectedTitle)
+      generatePaper(selectedTemplateId, selectedTitle, currentReport, currentSources)
+    }
+  }
+
+  const generatePaper = async (
+    templateId = selectedTemplateId,
+    activeTopicStr = currentTopic,
+    activeReportStr = currentReport,
+    activeSourcesList = currentSources
+  ) => {
     setIsGenerating(true)
     onNotify('Nemotron Ultra 550B synthesizing publication-grade LaTeX paper...')
 
@@ -72,9 +124,9 @@ export default function PaperStudio({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          topic: topic || 'Autonomous Intelligence Systems and Efficient Architectures',
-          report: reportText || 'Empirical analysis and operational efficiency of multi-agent neural architectures.',
-          sources: sources,
+          topic: activeTopicStr || 'Autonomous Intelligence Systems and Efficient Architectures',
+          report: activeReportStr || 'Empirical analysis and operational efficiency of multi-agent neural architectures.',
+          sources: activeSourcesList,
           template_id: templateId,
         }),
       })
@@ -83,13 +135,13 @@ export default function PaperStudio({
         const data = await res.json()
         setLatexCode(data.latex || '')
         setBibtexCode(data.bibtex || '')
-        onNotify('LaTeX paper and BibTeX references generated successfully.')
+        onNotify('LaTeX manuscript and BibTeX references generated.')
       } else {
         throw new Error('Server returned error')
       }
     } catch {
-      // Fallback draft if offline
-      const sampleBib = sources
+      // Offline fallback
+      const sampleBib = activeSourcesList
         .map((s) => s.bibtex || `@article{${s.bib_key || 'ref' + s.id},\n  title = {${s.title}},\n  author = {${s.authors}},\n  year = {2024}\n}`)
         .join('\n\n')
       setBibtexCode(sampleBib)
@@ -97,9 +149,9 @@ export default function PaperStudio({
 \\usepackage[nonatbib]{neurips_2024}
 \\usepackage{amsmath,amssymb,booktabs,graphicx,hyperref}
 
-\\title{${topic || 'Dense vs. Sparse Inference Architectures'}: An Analytical Investigation}
+\\title{${activeTopicStr}: An Analytical Investigation}
 \\author{
-  NemoSearch Autonomous Research Engine\\\\
+  NemoSearch Autonomous Research Group\\\\
   Nebius AI Cloud \\& NVIDIA Nemotron Ensemble\\\\
   \\texttt{research@nemosearch.ai}
 }
@@ -108,7 +160,7 @@ export default function PaperStudio({
 \\maketitle
 
 \\begin{abstract}
-We present a rigorous methodological and empirical examination of ${topic || 'computational scaling'}. By synthesizing primary findings and ground-truth benchmarks from peer-reviewed literature, this work formalizes the operational trade-offs governing modern distributed architectures.
+We present a rigorous methodological and empirical examination of \\textbf{${activeTopicStr}}. Grounded in primary scholarly findings, this work formalizes the operational trade-offs governing modern distributed architectures.
 \\end{abstract}
 
 \\section{Introduction}
@@ -136,6 +188,47 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
       onNotify('Loaded structured academic manuscript.')
     } finally {
       setIsGenerating(false)
+    }
+  }
+
+  // Human-in-the-loop refinement call
+  const handleRefinePaper = async (instructionToRun = humanInstruction) => {
+    const promptText = instructionToRun.trim()
+    if (!promptText || isRefining) return
+
+    setIsRefining(true)
+    onNotify(`AI Co-Author applying human guidance: "${promptText.slice(0, 45)}..."`)
+
+    try {
+      const res = await fetch('/api/paper/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: currentTopic,
+          current_latex: latexCode,
+          instruction: promptText,
+          sources: currentSources,
+        }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        if (data.latex) {
+          setLatexCode(data.latex)
+          setHumanInstruction('')
+          onNotify('Paper refined with human-in-the-loop steering.')
+        }
+      } else {
+        throw new Error('Refine request failed')
+      }
+    } catch {
+      // Local fallback refinement
+      const addition = `\n\n% --- Human-in-the-loop steering: ${promptText} ---\n\\subsection{Specialized Formulation}\nFollowing researcher guidance regarding "${promptText}", we extend the analytical framework to account for dynamic execution bounds.\n`
+      setLatexCode((prev) => prev.replace('\\section{Methodological Formulation}', '\\section{Methodological Formulation}' + addition))
+      setHumanInstruction('')
+      onNotify('Paper updated per human instruction.')
+    } finally {
+      setIsRefining(false)
     }
   }
 
@@ -176,7 +269,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          topic: topic || 'research_paper',
+          topic: currentTopic || 'research_paper',
           latex: latexCode,
           bibtex: bibtexCode,
         }),
@@ -187,7 +280,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `${(topic || 'paper').toLowerCase().replace(/[^a-z0-9]/g, '_')}_submission.zip`
+        a.download = `${(currentTopic || 'paper').toLowerCase().replace(/[^a-z0-9]/g, '_')}_submission.zip`
         a.click()
         URL.revokeObjectURL(url)
         onNotify('Complete LaTeX package (.zip) downloaded!')
@@ -224,34 +317,60 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
 
   return (
     <div className="paper-studio-container">
-      {/* Top Controls Bar */}
+      {/* Top Controls Bar with Topic Selector & Template Selector */}
       <div className="studio-topbar">
         <div className="studio-topbar-left">
           <div className="section-label">
-            <GraduationCap size={14} /> Paper Studio · In-App LaTeX Engine
+            <GraduationCap size={14} /> Paper Studio &bull; Autonomous LaTeX & BibTeX Co-Author
           </div>
-          <div className="studio-template-picker">
-            <label htmlFor="template-select">Target Venue Template:</label>
-            <select
-              id="template-select"
-              value={selectedTemplateId}
-              onChange={(e) => {
-                const nextId = e.target.value
-                if (nextId === 'custom_install_action') {
-                  setInstallModalOpen(true)
-                } else {
-                  setSelectedTemplateId(nextId)
-                  generatePaper(nextId)
-                }
-              }}
-            >
-              {templates.map((tpl) => (
-                <option key={tpl.id} value={tpl.id}>
-                  {tpl.name}
-                </option>
-              ))}
-              <option value="custom_install_action">+ Install Custom Journal Template...</option>
-            </select>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginTop: '6px' }}>
+            {/* Topic Selector from Recent Research */}
+            <div className="studio-template-picker">
+              <label htmlFor="topic-select" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <History size={13} /> Research Topic:
+              </label>
+              <select
+                id="topic-select"
+                value={currentTopic}
+                onChange={(e) => handleTopicSelect(e.target.value)}
+                style={{ maxWidth: '340px' }}
+              >
+                {savedReports.map((r) => (
+                  <option key={r.id || r.title} value={r.title}>
+                    {r.title}
+                  </option>
+                ))}
+                {!savedReports.some((r) => r.title === currentTopic) && (
+                  <option value={currentTopic}>{currentTopic}</option>
+                )}
+              </select>
+            </div>
+
+            {/* Template Selector */}
+            <div className="studio-template-picker">
+              <label htmlFor="template-select">Venue Template:</label>
+              <select
+                id="template-select"
+                value={selectedTemplateId}
+                onChange={(e) => {
+                  const nextId = e.target.value
+                  if (nextId === 'custom_install_action') {
+                    setInstallModalOpen(true)
+                  } else {
+                    setSelectedTemplateId(nextId)
+                    generatePaper(nextId)
+                  }
+                }}
+              >
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.name}
+                  </option>
+                ))}
+                <option value="custom_install_action">+ Install Custom Journal Template...</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -268,21 +387,79 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
             type="button"
             className="studio-btn"
             onClick={() => generatePaper(selectedTemplateId)}
-            disabled={isGenerating}
+            disabled={isGenerating || isRefining}
+            title="Autonomously synthesize complete paper from verified research"
           >
             {isGenerating ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
-            {isGenerating ? 'Synthesizing...' : 'Regenerate Draft'}
+            {isGenerating ? 'Synthesizing...' : 'Re-Draft Paper'}
           </button>
           <button
             type="button"
             className="studio-btn studio-btn-primary"
             onClick={handleDownloadZip}
-            title="Download full compilable package with main.tex, references.bib, and template README"
+            title="Download complete compilable package with main.tex, references.bib, and template README"
           >
             <FolderArchive size={15} /> Download .zip Package
           </button>
         </div>
       </div>
+
+      {/* Human-in-the-Loop AI Co-Author Bar */}
+      <section className="studio-coauthor-card">
+        <div className="coauthor-header">
+          <div className="coauthor-badge">
+            <Sparkles size={13} />
+            <span>AI Co-Author &bull; Human-in-the-Loop Steering</span>
+          </div>
+          <span className="coauthor-tip">
+            Steer Nemotron Ultra to write new proofs, format tables, derive equations, or expand sections.
+          </span>
+        </div>
+
+        <form
+          className="coauthor-input-row"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleRefinePaper()
+          }}
+        >
+          <input
+            type="text"
+            className="coauthor-text-input"
+            value={humanInstruction}
+            onChange={(e) => setHumanInstruction(e.target.value)}
+            placeholder="Instruct the AI co-author: e.g. 'Derive the latency bound formally with equation', 'Add comparative table of FLOPs', 'Deepen related work'..."
+            disabled={isRefining || isGenerating}
+          />
+          <button
+            type="submit"
+            className="studio-btn studio-btn-primary"
+            disabled={!humanInstruction.trim() || isRefining || isGenerating}
+            style={{ minHeight: '38px', padding: '0 16px' }}
+          >
+            {isRefining ? <LoaderCircle size={14} className="spin" /> : <Wand2 size={14} />}
+            {isRefining ? 'Refining...' : 'Steer & Write'}
+          </button>
+        </form>
+
+        <div className="coauthor-pills-row">
+          <span className="pills-label">Quick Steering:</span>
+          {QUICK_PROMPTS.map((qp, idx) => (
+            <button
+              type="button"
+              key={idx}
+              className="coauthor-pill-btn"
+              disabled={isRefining || isGenerating}
+              onClick={() => {
+                setHumanInstruction(qp.prompt)
+                handleRefinePaper(qp.prompt)
+              }}
+            >
+              {qp.label}
+            </button>
+          ))}
+        </div>
+      </section>
 
       {/* Dual Pane Studio: Code on Left, Formatted Paper on Right */}
       <div className="studio-dual-pane">
@@ -302,7 +479,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
                 className={`code-tab-btn ${activeCodeTab === 'bib' ? 'active' : ''}`}
                 onClick={() => setActiveCodeTab('bib')}
               >
-                <BookOpen size={14} /> references.bib ({sources.length} entries)
+                <BookOpen size={14} /> references.bib ({currentSources.length} entries)
               </button>
             </div>
             <div className="code-tabs-right">
@@ -355,9 +532,9 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
 
           <div className="academic-paper-sheet">
             <div className="paper-title-area">
-              <h1 className="paper-headline">{topic || 'Autonomous Scientific Investigation'}</h1>
+              <h1 className="paper-headline">{currentTopic}</h1>
               <div className="paper-authors">
-                <strong>NemoSearch Autonomous Research Engine</strong>
+                <strong>NemoSearch Autonomous Research Group</strong>
                 <span>Nebius AI Cloud &bull; NVIDIA Nemotron 3 Multi-Agent Ensemble</span>
                 <span className="paper-email">team@nemosearch.ai</span>
               </div>
@@ -366,7 +543,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
             <div className="paper-abstract-card">
               <span className="abstract-heading">Abstract</span>
               <p>
-                In this paper, we investigate <strong>{topic}</strong> through an autonomous multi-agent
+                In this paper, we investigate <strong>{currentTopic}</strong> through an autonomous multi-agent
                 literature review and synthesis pipeline. Grounded in primary scholarly literature from
                 arXiv, OpenAlex, and verified web records, we model the operational trade-offs, formalize
                 mathematical formulations, and present comparative benchmarks. Our findings demonstrate
@@ -380,7 +557,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
               <p>
                 Modern scientific workflows are increasingly bottlenecked by the rapid pace of
                 publication across distributed repositories. Understanding the core mechanisms of{' '}
-                <em>{topic}</em> requires reconciling theoretical formulations with empirical hardware
+                <em>{currentTopic}</em> requires reconciling theoretical formulations with empirical hardware
                 constraints.
               </p>
 
@@ -399,11 +576,11 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
 
               <h3>3. Grounded Related Work & Evidence Synthesis</h3>
               <p>
-                Our synthesis integrates primary findings across {sources.length || 3} verified scholarly
-                works. Every assertation is coupled with verbatim extracts and normalized BibTeX identifiers:
+                Our synthesis integrates primary findings across {currentSources.length || 3} verified scholarly
+                works. Every assertion is coupled with verbatim extracts and normalized BibTeX identifiers:
               </p>
               <ul className="preview-evidence-list">
-                {sources.slice(0, 4).map((s, idx) => (
+                {currentSources.slice(0, 4).map((s, idx) => (
                   <li key={s.id || idx}>
                     <strong>{`\\cite{${s.bib_key || 'source' + s.id}}`}</strong>: {s.title} ({s.domain})
                     {s.quote && <em> &mdash; &ldquo;{s.quote.slice(0, 140)}...&rdquo;</em>}
@@ -413,7 +590,7 @@ We have outlined an end-to-end framework for analyzing performance trade-offs, l
 
               <h3>4. References (BibTeX Mapped)</h3>
               <div className="preview-references-list">
-                {sources.map((s, idx) => (
+                {currentSources.map((s, idx) => (
                   <div className="preview-ref-entry" key={s.id || idx}>
                     <span className="ref-index">[{idx + 1}]</span>
                     <div>

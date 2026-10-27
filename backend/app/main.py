@@ -146,6 +146,7 @@ from .latex import (  # noqa: E402
     generate_latex_paper,
     get_all_templates,
     install_custom_template,
+    refine_latex_paper,
 )
 
 
@@ -155,6 +156,13 @@ class PaperGenerateRequest(BaseModel):
     sources: Any = []
     template_id: str = "neurips"
     custom_preamble: str = ""
+
+
+class PaperRefineRequest(BaseModel):
+    topic: str
+    current_latex: str
+    instruction: str
+    sources: Any = []
 
 
 class InstallTemplateRequest(BaseModel):
@@ -171,6 +179,7 @@ class ZipDownloadRequest(BaseModel):
 
 
 PaperGenerateRequest.model_rebuild()
+PaperRefineRequest.model_rebuild()
 InstallTemplateRequest.model_rebuild()
 ZipDownloadRequest.model_rebuild()
 
@@ -195,6 +204,18 @@ async def generate_paper(req: PaperGenerateRequest):
         return JSONResponse(res)
     except Exception as e:  # noqa: BLE001
         logging.exception("paper generation failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/paper/refine")
+async def refine_paper_endpoint(req: PaperRefineRequest):
+    try:
+        res = await refine_latex_paper(
+            req.topic, req.current_latex, req.instruction, req.sources, llm
+        )
+        return JSONResponse(res)
+    except Exception as e:  # noqa: BLE001
+        logging.exception("paper refinement failed")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

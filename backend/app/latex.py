@@ -399,3 +399,92 @@ Or import directly into Overleaf by dragging this zip file into 'New Project -> 
 
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
+
+
+async def refine_latex_paper(
+    topic: str,
+    current_latex: str,
+    instruction: str,
+    sources: list[dict[str, Any]] | dict[int | str, Any],
+    llm: LLM,
+) -> dict[str, Any]:
+    """Human-in-the-loop AI Co-Author: Intelligently expands, modifies, or writes sections of the paper based on researcher guidance."""
+    stats = RunStats()
+
+    src_list: list[dict[str, Any]] = []
+    if isinstance(sources, dict):
+        src_list = list(sources.values())
+    elif isinstance(sources, list):
+        src_list = sources
+
+    evidence_snippets = "\n".join(
+        f"- \\cite{{{s.get('bib_key', f'ref{idx}')}}}: {s.get('title', '')} (Evidence: {s.get('quote', s.get('snippet', ''))[:160]})"
+        for idx, s in enumerate(src_list[:12], start=1)
+    )
+
+    sys = (
+        "You are an elite scientific AI co-author collaborating with a human researcher on a LaTeX manuscript.\n"
+        "Your task is to revise, expand, or write sections of the provided LaTeX manuscript following the researcher's exact instruction.\n"
+        "MANDATORY RULES:\n"
+        "1. Obey the researcher's steering instructions precisely (e.g., add math equations, refine discussion, synthesize benchmarks, format tables).\n"
+        "2. Ground any assertions using the verified \\cite{key} keys provided.\n"
+        "3. Preserve all existing valid LaTeX packages, preamble, and overall structure.\n"
+        "4. Output the COMPLETE updated compilable LaTeX code from \\documentclass to \\end{document}. Do NOT wrap with markdown backticks."
+    )
+
+    user = f"""RESEARCH TOPIC:
+{topic}
+
+RESEARCHER'S STEERING INSTRUCTION:
+{instruction}
+
+VERIFIED CITATIONS AVAILABLE:
+{evidence_snippets}
+
+CURRENT LATEX MANUSCRIPT:
+{current_latex[:7000]}
+
+Apply the researcher's instructions and output the complete updated LaTeX code now."""
+
+    def mock_refine():
+        if "\\section{Methodological Formulation}" in current_latex:
+            addition = f"""\n\n% --- Human-in-the-loop expansion: {instruction} ---
+\\subsection{{Operational Bounds and Scaling Analysis}}
+Guided by researcher steering regarding \\textit{{{instruction}}}, we formalize the operational boundaries for {topic}. 
+Under high-concurrency workloads, the memory access penalty $\\beta \\cdot \\text{{MemoryAccess}}(x)$ dominates FLOP scaling, requiring IO-aware hierarchical caching.
+"""
+            return current_latex.replace(
+                "\\section{Methodological Formulation}",
+                "\\section{Methodological Formulation}" + addition
+            )
+        return current_latex + f"\n% Refined per instruction: {instruction}\n"
+
+    raw_body = await llm.chat(
+        "ultra",
+        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        stats,
+        max_tokens=3200,
+        temperature=0.3,
+        mock=mock_refine,
+    )
+
+    clean_latex = raw_body.strip()
+    if clean_latex.startswith("```latex"):
+        clean_latex = clean_latex[8:]
+    elif clean_latex.startswith("```"):
+        clean_latex = clean_latex[3:]
+    if clean_latex.endswith("```"):
+        clean_latex = clean_latex[:-3]
+    clean_latex = clean_latex.strip()
+
+    if "\\documentclass" not in clean_latex and "\\begin{document}" in current_latex:
+        doc_header = current_latex.split("\\begin{document}")[0] + "\\begin{document}\n"
+        doc_footer = "\n\\end{document}"
+        clean_latex = doc_header + clean_latex + doc_footer
+
+    return {
+        "latex": clean_latex,
+        "instruction": instruction,
+        "stats": stats.to_dict(),
+    }
+
