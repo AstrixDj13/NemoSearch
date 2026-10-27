@@ -14,6 +14,7 @@ from typing import AsyncIterator
 
 from .connectors import utc_now
 from .llm import LLM, RunStats, extract_json
+from .scholar import generate_bibtex, sanitize_bib_key
 from .scholarly import Scholarly, academic_intent, coverage_summary
 from .search import Search
 
@@ -262,6 +263,15 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
                     continue
                 seen_urls.add(r["url"])
                 r["id"] = len(sources) + 1
+                # BibTeX for Paper Studio, from retrieved metadata only (web pages have no known year)
+                paper = r.get("paper") or {}
+                bib_authors = " and ".join(paper.get("authors") or []) or r.get("domain") or "Web"
+                bib_year = paper.get("year") or ""
+                r.setdefault("bib_key", sanitize_bib_key(bib_authors, bib_year, r["title"]))
+                r.setdefault("bibtex", generate_bibtex(
+                    r["bib_key"], r["title"], bib_authors, bib_year,
+                    paper.get("venue") or r.get("domain", ""), paper.get("doi") or "", r["url"],
+                ))
                 sources[r["id"]] = r
                 new.append(r)
                 yield {
@@ -400,6 +410,11 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
                 "quote": next((n.get("quote", "") for n in notes if n["id"] == s["id"]), ""),
                 "summary": next((n.get("summary", "") for n in notes if n["id"] == s["id"]), ""),
                 "relevance": next((n.get("relevance", 0) for n in notes if n["id"] == s["id"]), 0),
+                "bib_key": s.get("bib_key", f"ref{s['id']}"),
+                "bibtex": s.get("bibtex", ""),
+                "authors": ", ".join((s.get("paper") or {}).get("authors") or []) or s.get("domain", ""),
+                "doi": (s.get("paper") or {}).get("doi") or "",
+                "venue": (s.get("paper") or {}).get("venue") or s.get("domain", ""),
             } for s in sources.values()
         }
     }

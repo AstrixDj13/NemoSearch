@@ -15,16 +15,20 @@ import {
   ChartNoAxesCombined,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock3,
+  Code,
   Copy,
   CopyPlus,
   Download,
   ExternalLink,
+  FileCode,
   FileText,
   FolderOpen,
   FolderPlus,
   Globe2,
   GraduationCap,
+  Image as ImageIcon,
   Library,
   LoaderCircle,
   Menu,
@@ -54,6 +58,7 @@ import RoutingEditor from './components/RoutingEditor'
 import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './components/SourceProvenance'
 import { isPaper, sourceOrigin } from './sources'
 import { byRecency, makeTitle, normalizeReports, reportTime, runNumbers } from './library'
+import PaperStudio from './components/PaperStudio'
 import {
   defaultResearchSteps,
   sampleSources,
@@ -93,6 +98,7 @@ const viewNames: Record<View, string> = {
   report: 'Research brief',
   library: 'Library',
   activity: 'Agent activity',
+  studio: 'Paper Studio',
 }
 
 const defaultSlides: SlideItem[] = [
@@ -1493,6 +1499,14 @@ export default function App() {
     `${report.title} ${report.question ?? ''}`.toLowerCase().includes(libraryFilter.toLowerCase())
   const filteredReports = visibleReports.filter(matchesFilter)
   const filteredArchived = archivedReports.filter(matchesFilter)
+  // Paper Studio Overleaf file tree state in left sidebar
+  const [studioActiveFile, setStudioActiveFile] = useState<string>('main.tex')
+  const [studioFileFilter, setStudioFileFilter] = useState<string>('')
+  const [studioFoldersOpen, setStudioFoldersOpen] = useState<Record<string, boolean>>({
+    sections: true,
+    figures: true,
+    styles: true,
+  })
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -1542,6 +1556,14 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={view === 'studio' ? 'active' : ''}
+            onClick={() => navigate('studio')}
+            title="Paper Studio (In-App LaTeX Engine)"
+          >
+            <GraduationCap size={17} /> <span className="nav-label">Paper Studio</span>
+          </button>
+          <button
+            type="button"
             className={view === 'activity' ? 'active' : ''}
             onClick={() => navigate('activity')}
             title="Agent activity"
@@ -1549,69 +1571,219 @@ export default function App() {
             <Activity size={17} /> <span className="nav-label">Agent activity</span>
           </button>
         </nav>
-        <nav className="recent-block" aria-labelledby="recent-title">
-          <div className="recent-header">
-            <div className="section-label" id="recent-title">Recent research</div>
-            <button type="button" className="recent-new-project" title="New project" aria-label="New project" onClick={() => openProjectDialog({ mode: 'create' })}>
-              <FolderPlus size={15} aria-hidden="true" />
-            </button>
-          </div>
-          {scopeSelect('sidebar-scope', 'scope-select')}
-          <div className="recent-scroll">
-            {historyStatus === 'loading' ? (
-              <p className="recent-empty">Loading your research…</p>
-            ) : historyStatus === 'error' ? (
-              <div className="recent-empty" role="alert">
-                <p>Your research history isn't available right now. {historyError}</p>
-                <button type="button" className="recent-more" onClick={loadHistory}>
-                  Try again
-                </button>
+        {view === 'studio' ? (
+          <div className="sidebar-project-files">
+            <div className="sidebar-project-header">
+              <div className="overleaf-title-badge">
+                <span className="overleaf-dot" />
+                <span>PROJECT FILES</span>
               </div>
-            ) : recentReports.length === 0 ? (
-              <p className="recent-empty">
-                {scope === 'all'
-                  ? 'Your research runs will appear here.'
-                  : scope === 'unassigned'
-                    ? 'No unassigned research.'
-                    : 'No research in this project yet. Research you start while it is selected is saved here.'}
-              </p>
-            ) : (
-              <ul className="recent-list">
-                {recentReports.map((report) => {
-                  const active = report.id === activeReportId && view === 'report'
-                  const isRenaming = renaming?.id === report.id && renaming.place === 'sidebar'
-                  return (
-                    <li className={`recent-item ${active ? 'active' : ''}`} key={report.id} data-report-id={report.id}>
-                      {isRenaming ? (
-                        renameInput(report, 'recent-rename')
-                      ) : (
+              <span className="tree-badge">Overleaf</span>
+            </div>
+
+            <div className="sidebar-project-search">
+              <input
+                type="text"
+                placeholder="Filter files..."
+                value={studioFileFilter}
+                onChange={(e) => setStudioFileFilter(e.target.value)}
+              />
+            </div>
+
+            <div className="sidebar-project-tree">
+              {/* sections/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, sections: !p.sections }))}
+                >
+                  {studioFoldersOpen.sections ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>sections/</span>
+                  <span className="tree-badge">4</span>
+                </div>
+                {studioFoldersOpen.sections && (
+                  <div className="sidebar-tree-children">
+                    {[
+                      { id: '01_introduction.tex', label: '01_introduction.tex' },
+                      { id: '02_related_work.tex', label: '02_related_work.tex' },
+                      { id: '03_methodology.tex', label: '03_methodology.tex' },
+                      { id: '04_experiments.tex', label: '04_experiments.tex' },
+                    ]
+                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
+                      .map((f) => (
                         <button
+                          key={f.id}
                           type="button"
-                          className="report-open recent-open"
-                          aria-current={active ? 'page' : undefined}
-                          title={report.question && report.question !== report.title ? report.question : undefined}
-                          onClick={() => openReport(report)}
+                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
+                          onClick={() => setStudioActiveFile(f.id)}
                         >
-                          <span className="recent-title">{report.title}</span>
-                          <span className="recent-meta">
-                            {reportTime(report, now)} · {report.sources} sources
-                            {runNumber.has(report.id) && ` · Run ${runNumber.get(report.id)}`}
-                          </span>
+                          <FileCode size={12} className="tree-icon-tex" />
+                          <span>{f.label}</span>
                         </button>
-                      )}
-                      {!isRenaming && <ItemMenu label={`Actions for “${report.title}”`} actions={reportActions(report, 'sidebar')} />}
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-            {visibleReports.length > recentReports.length && (
-              <button type="button" className="recent-more" onClick={() => navigate('library')}>
-                View all {visibleReports.length} in Library
-              </button>
-            )}
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* figures/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, figures: !p.figures }))}
+                >
+                  {studioFoldersOpen.figures ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>figures/</span>
+                  <span className="tree-badge">2</span>
+                </div>
+                {studioFoldersOpen.figures && (
+                  <div className="sidebar-tree-children">
+                    {[
+                      { id: 'system_pipeline.png', label: 'system_pipeline.png' },
+                      { id: 'tradeoff_benchmarks.png', label: 'tradeoff_benchmarks.png' },
+                    ]
+                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
+                      .map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
+                          onClick={() => setStudioActiveFile(f.id)}
+                        >
+                          <ImageIcon size={12} className="tree-icon-image" />
+                          <span>{f.label}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* styles/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, styles: !p.styles }))}
+                >
+                  {studioFoldersOpen.styles ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>styles/</span>
+                  <span className="tree-badge">1</span>
+                </div>
+                {studioFoldersOpen.styles && (
+                  <div className="sidebar-tree-children">
+                    <button
+                      type="button"
+                      className={`sidebar-tree-row file-row ${studioActiveFile === 'neurips_2024.sty' ? 'active' : ''}`}
+                      onClick={() => setStudioActiveFile('neurips_2024.sty')}
+                    >
+                      <Code size={12} className="tree-icon-sty" />
+                      <span>neurips_2024.sty</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Root files */}
+              {(!studioFileFilter || 'main.tex'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'main.tex' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('main.tex')}
+                >
+                  <FileCode size={13} className="tree-icon-tex" />
+                  <span>main.tex</span>
+                </button>
+              )}
+
+              {(!studioFileFilter || 'references.bib'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'references.bib' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('references.bib')}
+                >
+                  <BookOpen size={13} className="tree-icon-bib" />
+                  <span>references.bib</span>
+                </button>
+              )}
+
+              {(!studioFileFilter || 'readme.md'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'README.md' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('README.md')}
+                >
+                  <FileText size={13} className="tree-icon-md" />
+                  <span>README.md</span>
+                </button>
+              )}
+            </div>
           </div>
-        </nav>
+        ) : (
+          <nav className="recent-block" aria-labelledby="recent-title">
+            <div className="recent-header">
+              <div className="section-label" id="recent-title">Recent research</div>
+              <button type="button" className="recent-new-project" title="New project" aria-label="New project" onClick={() => openProjectDialog({ mode: 'create' })}>
+                <FolderPlus size={15} aria-hidden="true" />
+              </button>
+            </div>
+            {scopeSelect('sidebar-scope', 'scope-select')}
+            <div className="recent-scroll">
+              {historyStatus === 'loading' ? (
+                <p className="recent-empty">Loading your research…</p>
+              ) : historyStatus === 'error' ? (
+                <div className="recent-empty" role="alert">
+                  <p>Your research history isn't available right now. {historyError}</p>
+                  <button type="button" className="recent-more" onClick={loadHistory}>
+                    Try again
+                  </button>
+                </div>
+              ) : recentReports.length === 0 ? (
+                <p className="recent-empty">
+                  {scope === 'all'
+                    ? 'Your research runs will appear here.'
+                    : scope === 'unassigned'
+                      ? 'No unassigned research.'
+                      : 'No research in this project yet. Research you start while it is selected is saved here.'}
+                </p>
+              ) : (
+                <ul className="recent-list">
+                  {recentReports.map((report) => {
+                    const active = report.id === activeReportId && view === 'report'
+                    const isRenaming = renaming?.id === report.id && renaming.place === 'sidebar'
+                    return (
+                      <li className={`recent-item ${active ? 'active' : ''}`} key={report.id} data-report-id={report.id}>
+                        {isRenaming ? (
+                          renameInput(report, 'recent-rename')
+                        ) : (
+                          <button
+                            type="button"
+                            className="report-open recent-open"
+                            aria-current={active ? 'page' : undefined}
+                            title={report.question && report.question !== report.title ? report.question : undefined}
+                            onClick={() => openReport(report)}
+                          >
+                            <span className="recent-title">{report.title}</span>
+                            <span className="recent-meta">
+                              {reportTime(report, now)} · {report.sources} sources
+                              {runNumber.has(report.id) && ` · Run ${runNumber.get(report.id)}`}
+                            </span>
+                          </button>
+                        )}
+                        {!isRenaming && <ItemMenu label={`Actions for “${report.title}”`} actions={reportActions(report, 'sidebar')} />}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              {visibleReports.length > recentReports.length && (
+                <button type="button" className="recent-more" onClick={() => navigate('library')}>
+                  View all {visibleReports.length} in Library
+                </button>
+              )}
+            </div>
+          </nav>
+        )}
         <div className="sidebar-profile">
           <span className="workspace-avatar">NS</span>
           <span className="nav-label">
@@ -1885,6 +2057,9 @@ export default function App() {
                   {liveStats.elapsed && <span>Completed in {liveStats.elapsed}s</span>}
                 </div>
                 <div className="report-actions">
+                  <button type="button" onClick={() => navigate('studio')} title="Draft full publication-grade LaTeX paper">
+                    <GraduationCap size={16} /> Paper Studio (LaTeX)
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -2305,6 +2480,18 @@ export default function App() {
                 </button>
               </div>
             </section>
+          )}
+
+          {view === 'studio' && (
+            <PaperStudio
+              topic={submittedQuery}
+              reportText={isLiveRun && liveReport ? liveReport : SAMPLE_QUERY}
+              sources={currentSources}
+              savedReports={libraryReports}
+              activeFileId={studioActiveFile}
+              onSelectFile={setStudioActiveFile}
+              onNotify={notify}
+            />
           )}
         </main>
       </div>
