@@ -12,12 +12,16 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Code,
   Copy,
   Download,
   ExternalLink,
+  FileCode,
   FileText,
+  FolderOpen,
   Globe2,
   GraduationCap,
+  Image as ImageIcon,
   Library,
   LoaderCircle,
   Menu,
@@ -963,6 +967,15 @@ export default function App() {
     report.title.toLowerCase().includes(libraryFilter.toLowerCase())
   )
 
+  // Paper Studio Overleaf file tree state in left sidebar
+  const [studioActiveFile, setStudioActiveFile] = useState<string>('main.tex')
+  const [studioFileFilter, setStudioFileFilter] = useState<string>('')
+  const [studioFoldersOpen, setStudioFoldersOpen] = useState<Record<string, boolean>>({
+    sections: true,
+    figures: true,
+    styles: true,
+  })
+
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <DotField running={view === 'running'} />
@@ -1026,20 +1039,170 @@ export default function App() {
             <Activity size={17} /> <span className="nav-label">Agent activity</span>
           </button>
         </nav>
-        <div className="recent-block">
-          <div className="section-label">Recent research</div>
-          {libraryReports.slice(0, 5).map((report) => (
-            <button
-              type="button"
-              className="recent-item"
-              key={report.id || report.title}
-              onClick={() => openReport(report)}
-            >
-              {report.title}
-              <ChevronRight size={14} />
-            </button>
-          ))}
-        </div>
+        {view === 'studio' ? (
+          <div className="sidebar-project-files">
+            <div className="sidebar-project-header">
+              <div className="overleaf-title-badge">
+                <span className="overleaf-dot" />
+                <span>PROJECT FILES</span>
+              </div>
+              <span className="tree-badge">Overleaf</span>
+            </div>
+
+            <div className="sidebar-project-search">
+              <input
+                type="text"
+                placeholder="Filter files..."
+                value={studioFileFilter}
+                onChange={(e) => setStudioFileFilter(e.target.value)}
+              />
+            </div>
+
+            <div className="sidebar-project-tree">
+              {/* sections/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, sections: !p.sections }))}
+                >
+                  {studioFoldersOpen.sections ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>sections/</span>
+                  <span className="tree-badge">4</span>
+                </div>
+                {studioFoldersOpen.sections && (
+                  <div className="sidebar-tree-children">
+                    {[
+                      { id: '01_introduction.tex', label: '01_introduction.tex' },
+                      { id: '02_related_work.tex', label: '02_related_work.tex' },
+                      { id: '03_methodology.tex', label: '03_methodology.tex' },
+                      { id: '04_experiments.tex', label: '04_experiments.tex' },
+                    ]
+                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
+                      .map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
+                          onClick={() => setStudioActiveFile(f.id)}
+                        >
+                          <FileCode size={12} className="tree-icon-tex" />
+                          <span>{f.label}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* figures/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, figures: !p.figures }))}
+                >
+                  {studioFoldersOpen.figures ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>figures/</span>
+                  <span className="tree-badge">2</span>
+                </div>
+                {studioFoldersOpen.figures && (
+                  <div className="sidebar-tree-children">
+                    {[
+                      { id: 'system_pipeline.png', label: 'system_pipeline.png' },
+                      { id: 'tradeoff_benchmarks.png', label: 'tradeoff_benchmarks.png' },
+                    ]
+                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
+                      .map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
+                          onClick={() => setStudioActiveFile(f.id)}
+                        >
+                          <ImageIcon size={12} className="tree-icon-image" />
+                          <span>{f.label}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* styles/ */}
+              <div className="tree-folder-group">
+                <div
+                  className="sidebar-tree-row folder-row"
+                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, styles: !p.styles }))}
+                >
+                  {studioFoldersOpen.styles ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <FolderOpen size={13} className="tree-icon-folder" />
+                  <span>styles/</span>
+                  <span className="tree-badge">1</span>
+                </div>
+                {studioFoldersOpen.styles && (
+                  <div className="sidebar-tree-children">
+                    <button
+                      type="button"
+                      className={`sidebar-tree-row file-row ${studioActiveFile === 'neurips_2024.sty' ? 'active' : ''}`}
+                      onClick={() => setStudioActiveFile('neurips_2024.sty')}
+                    >
+                      <Code size={12} className="tree-icon-sty" />
+                      <span>neurips_2024.sty</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Root files */}
+              {(!studioFileFilter || 'main.tex'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'main.tex' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('main.tex')}
+                >
+                  <FileCode size={13} className="tree-icon-tex" />
+                  <span>main.tex</span>
+                </button>
+              )}
+
+              {(!studioFileFilter || 'references.bib'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'references.bib' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('references.bib')}
+                >
+                  <BookOpen size={13} className="tree-icon-bib" />
+                  <span>references.bib</span>
+                </button>
+              )}
+
+              {(!studioFileFilter || 'readme.md'.includes(studioFileFilter.toLowerCase())) && (
+                <button
+                  type="button"
+                  className={`sidebar-tree-row file-row ${studioActiveFile === 'README.md' ? 'active' : ''}`}
+                  onClick={() => setStudioActiveFile('README.md')}
+                >
+                  <FileText size={13} className="tree-icon-md" />
+                  <span>README.md</span>
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="recent-block">
+            <div className="section-label">Recent research</div>
+            {libraryReports.slice(0, 5).map((report) => (
+              <button
+                type="button"
+                className="recent-item"
+                key={report.id || report.title}
+                onClick={() => openReport(report)}
+              >
+                {report.title}
+                <ChevronRight size={14} />
+              </button>
+            ))}
+          </div>
+        )}
         <div className="sidebar-profile">
           <span className="workspace-avatar">NS</span>
           <span className="nav-label">
@@ -1765,6 +1928,8 @@ export default function App() {
               reportText={isLiveRun && liveReport ? liveReport : SAMPLE_QUERY}
               sources={currentSources}
               savedReports={libraryReports}
+              activeFileId={studioActiveFile}
+              onSelectFile={setStudioActiveFile}
               onNotify={notify}
             />
           )}

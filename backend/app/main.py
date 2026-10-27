@@ -162,6 +162,7 @@ class PaperRefineRequest(BaseModel):
     topic: str
     current_latex: str
     instruction: str
+    report: str = ""
     sources: Any = []
 
 
@@ -211,7 +212,7 @@ async def generate_paper(req: PaperGenerateRequest):
 async def refine_paper_endpoint(req: PaperRefineRequest):
     try:
         res = await refine_latex_paper(
-            req.topic, req.current_latex, req.instruction, req.sources, llm
+            req.topic, req.current_latex, req.instruction, req.sources, llm, req.report
         )
         return JSONResponse(res)
     except Exception as e:  # noqa: BLE001

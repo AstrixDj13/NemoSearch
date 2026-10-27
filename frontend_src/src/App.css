@@ -510,36 +510,33 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .studio-btn:hover { border-color: var(--ink-100); transform: translateY(-1px); }
 .studio-btn-primary { background: var(--ink-100); color: var(--paper); border-color: var(--ink-100); }
 .studio-btn-primary:hover { opacity: .9; }
-.studio-multi-pane { display: flex; gap: 18px; min-height: 760px; margin-top: 24px; align-items: stretch; }
-.overleaf-sidebar { flex: 0 0 250px; display: flex; flex-direction: column; border: 1px solid var(--hairline); border-radius: 16px; background: var(--paper); overflow: hidden; box-shadow: 0 8px 30px oklch(0.2 0.01 260 / .03); transition: flex-basis 200ms ease, width 200ms ease; }
-.overleaf-sidebar.collapsed { flex: 0 0 46px; width: 46px; }
-.overleaf-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px dotted var(--hairline); background: oklch(0.985 0.002 260); }
+.studio-dual-pane { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: 24px; min-height: 760px; margin-top: 20px; }
+.refine-progress-banner { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-radius: 10px; background: oklch(0.96 0.05 150 / .2); border: 1px solid #10b981; color: #065f46; font-size: 12.5px; margin-bottom: 14px; }
+.refine-progress-banner strong { font-weight: 600; }
+
+/* Left Sidebar Project Files (Overleaf in place of Recent Research) */
+.sidebar-project-files { padding: 18px 6px 12px; display: flex; flex-direction: column; gap: 10px; border-top: 1px dotted var(--hairline); flex: 1; overflow-y: auto; }
+.sidebar-project-header { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 4px; }
 .overleaf-title-badge { display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; color: var(--ink-100); letter-spacing: 0.04em; }
 .overleaf-dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
-.overleaf-actions { display: flex; align-items: center; gap: 4px; }
-.overleaf-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--hairline); border-radius: 6px; background: var(--paper); color: var(--muted-text); cursor: pointer; transition: all 140ms ease; }
-.overleaf-btn:hover { color: var(--ink-100); border-color: var(--ink-100); background: oklch(0.98 0.002 260); }
-.overleaf-search { padding: 8px 12px; border-bottom: 1px dotted var(--hairline); }
-.overleaf-search-input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid var(--hairline); border-radius: 6px; background: oklch(0.99 0.001 260); font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: var(--ink-100); outline: 0; }
-.overleaf-search-input:focus { border-color: var(--ink-100); }
-.overleaf-tree-body { flex: 1; padding: 10px 8px; overflow-y: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; display: flex; flex-direction: column; gap: 2px; }
-.tree-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 7px; cursor: pointer; transition: background 140ms ease, color 140ms ease; user-select: none; }
-.tree-row:hover { background: oklch(0.96 0.005 260); }
-.tree-row.active { background: oklch(0.93 0.01 260); color: var(--ink-100); font-weight: 600; box-shadow: inset 3px 0 0 #10b981; }
-.tree-item-left { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
-.tree-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
-.tree-badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; background: oklch(0.95 0.005 260); color: var(--muted-text); font-weight: 500; }
-.tree-indent { padding-left: 18px; }
+.sidebar-project-search { padding: 0 4px; }
+.sidebar-project-search input { width: 100%; height: 28px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 6px; background: oklch(0.985 0.002 260); font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: var(--ink-100); outline: 0; }
+.sidebar-project-search input:focus { border-color: var(--ink-100); }
+.sidebar-project-tree { display: flex; flex-direction: column; gap: 2px; }
+.sidebar-tree-row { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-text); font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-align: left; cursor: pointer; transition: background 140ms ease, color 140ms ease; }
+.sidebar-tree-row:hover { background: oklch(0.96 0.005 260); color: var(--ink-100); }
+.sidebar-tree-row.active { background: oklch(0.93 0.01 260); color: var(--ink-100); font-weight: 600; box-shadow: inset 3px 0 0 #10b981; }
+.sidebar-tree-children { padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+.tree-badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; background: oklch(0.95 0.005 260); color: var(--muted-text); font-weight: 500; margin-left: auto; }
 .tree-icon-tex { color: #10b981; }
 .tree-icon-bib { color: #f59e0b; }
 .tree-icon-sty { color: #8b5cf6; }
 .tree-icon-md { color: #3b82f6; }
 .tree-icon-image { color: #ec4899; }
 .tree-icon-folder { color: #6b7280; }
-.overleaf-collapsed-strip { display: flex; flex-direction: column; align-items: center; padding: 12px 6px; gap: 12px; }
 
 /* Code Editor with Line Numbers */
-.studio-code-pane { flex: 1 1 50%; display: flex; flex-direction: column; border: 1px solid var(--hairline); border-radius: 16px; background: var(--paper); overflow: hidden; box-shadow: 0 8px 30px oklch(0.2 0.01 260 / .03); min-width: 0; }
+.studio-code-pane { display: flex; flex-direction: column; border: 1px solid var(--hairline); border-radius: 16px; background: var(--paper); overflow: hidden; box-shadow: 0 8px 30px oklch(0.2 0.01 260 / .03); min-width: 0; }
 .studio-code-tabs { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px dotted var(--hairline); background: oklch(0.985 0.002 260); }
 .code-tabs-left, .code-tabs-right { display: flex; align-items: center; gap: 8px; }
 .file-breadcrumb { display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 600; color: var(--ink-100); }
@@ -556,6 +553,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .asset-image-box { width: 280px; height: 200px; border: 1px dashed var(--hairline); border-radius: 12px; background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; box-shadow: 0 4px 16px oklch(0.2 0.01 260 / .04); }
 .asset-caption { font-size: 12px; color: var(--muted-text); max-width: 420px; line-height: 1.5; }
 .asset-latex-code { width: 100%; max-width: 520px; padding: 14px; background: var(--paper); border: 1px solid var(--hairline); border-radius: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-align: left; overflow-x: auto; color: var(--ink-100); }
+
+/* Dynamic Academic Preview Styles */
+.paper-latex-table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 12px; font-family: 'IBM Plex Mono', monospace; background: var(--paper); }
+.paper-latex-table th { border-top: 2px solid var(--ink-100); border-bottom: 1px solid var(--ink-100); padding: 8px 10px; text-align: left; font-weight: 600; color: var(--ink-100); }
+.paper-latex-table td { padding: 7px 10px; border-bottom: 1px dotted var(--hairline); color: oklch(0.25 0.005 260); }
+.paper-latex-table tr:last-child td { border-bottom: 2px solid var(--ink-100); }
 
 /* Right Preview Pane */
 .studio-preview-pane { flex: 1 1 50%; display: flex; flex-direction: column; border: 1px solid var(--hairline); border-radius: 16px; background: oklch(0.98 0.002 260); padding: 18px; overflow-y: auto; max-height: 800px; box-shadow: 0 8px 30px oklch(0.2 0.01 260 / .03); min-width: 0; }

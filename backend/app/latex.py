@@ -440,6 +440,7 @@ async def refine_latex_paper(
     instruction: str,
     sources: list[dict[str, Any]] | dict[int | str, Any],
     llm: LLM,
+    report: str = "",
 ) -> dict[str, Any]:
     """Human-in-the-loop AI Co-Author: Intelligently expands, modifies, or writes sections of the paper based on researcher guidance."""
     stats = RunStats()
@@ -452,17 +453,18 @@ async def refine_latex_paper(
 
     evidence_snippets = "\n".join(
         f"- \\cite{{{s.get('bib_key', f'ref{idx}')}}}: {s.get('title', '')} (Evidence: {s.get('quote', s.get('snippet', ''))[:160]})"
-        for idx, s in enumerate(src_list[:12], start=1)
+        for idx, s in enumerate(src_list[:15], start=1)
     )
 
     sys = (
-        "You are an elite scientific AI co-author collaborating with a human researcher on a LaTeX manuscript.\n"
+        "You are an elite scientific AI co-author collaborating with a human researcher on a publication-grade LaTeX manuscript.\n"
         "Your task is to revise, expand, or write sections of the provided LaTeX manuscript following the researcher's exact instruction.\n"
         "MANDATORY RULES:\n"
-        "1. Obey the researcher's steering instructions precisely (e.g., add math equations, refine discussion, synthesize benchmarks, format tables).\n"
-        "2. Ground any assertions using the verified \\cite{key} keys provided.\n"
-        "3. Preserve all existing valid LaTeX packages, preamble, and overall structure.\n"
-        "4. Output the COMPLETE updated compilable LaTeX code from \\documentclass to \\end{document}. Do NOT wrap with markdown backticks."
+        "1. Obey the researcher's steering instructions precisely. If asked to write a 3-page or comprehensive paper, thoroughly expand and flesh out all sections (Introduction, Related Work, Theoretical Formulation, Empirical Evaluation with Tables, Discussion, and Conclusion) with deep content.\n"
+        "2. Ground assertions using the verified \\cite{key} keys provided from primary literature.\n"
+        "3. Synthesize the provided deep research findings into the text, equations, and tables.\n"
+        "4. Preserve all existing valid LaTeX packages, preamble, and overall structure.\n"
+        "5. Output the COMPLETE updated compilable LaTeX code from \\documentclass to \\end{document}. Do NOT wrap with markdown backticks."
     )
 
     user = f"""RESEARCH TOPIC:
@@ -471,13 +473,16 @@ async def refine_latex_paper(
 RESEARCHER'S STEERING INSTRUCTION:
 {instruction}
 
-VERIFIED CITATIONS AVAILABLE:
+DEEP RESEARCH REPORT & FINDINGS:
+{report[:7000] if report.strip() else 'Refer to verified literature and current manuscript.'}
+
+VERIFIED PRIMARY EVIDENCE & CITATIONS:
 {evidence_snippets}
 
 CURRENT LATEX MANUSCRIPT:
 {current_latex[:7000]}
 
-Apply the researcher's instructions and output the complete updated LaTeX code now."""
+Apply the researcher's instructions and output the complete updated LaTeX code now. Write out all sections thoroughly with complete academic prose, mathematical formulations, tables, and citations."""
 
     def mock_refine():
         if "\\section{Methodological Formulation}" in current_latex:
@@ -496,7 +501,7 @@ Under high-concurrency workloads, the memory access penalty $\\beta \\cdot \\tex
         "ultra",
         [{"role": "system", "content": sys}, {"role": "user", "content": user}],
         stats,
-        max_tokens=3200,
+        max_tokens=5500,
         temperature=0.3,
         mock=mock_refine,
     )
