@@ -28,6 +28,12 @@ DEFAULT_MODELS = {
 ROLE_KEYWORDS = {"nano": ["nano"], "super": ["super"], "ultra": ["ultra"]}
 # Pipeline step -> model tier used when the user keeps the recommended routing
 STEP_ROLES = {"planner": "nano", "reader": "super", "critic": "nano", "writer": "ultra"}
+# Routing presets offered in the UI; "balanced" is the recommended default
+PRESET_ROLES = {
+    "fast": {"planner": "nano", "reader": "nano", "critic": "nano", "writer": "super"},
+    "balanced": STEP_ROLES,
+    "thorough": {"planner": "super", "reader": "super", "critic": "ultra", "writer": "ultra"},
+}
 
 
 def thinking_kwargs(on: bool) -> dict:
@@ -172,10 +178,15 @@ class LLM:
                 log.warning("No Nemotron '%s' model found in catalog; keeping %s", role, mid)
 
     def chat_models(self) -> list[str]:
-        """Models a user may pick for a pipeline step: the catalog minus embedding models, Nemotron first."""
+        """Models a user may pick for a pipeline step: NVIDIA chat models only, Nemotron 3 first."""
         catalog = self.available or list(dict.fromkeys(self.models.values()))
-        chat = [m for m in catalog if "embedding" not in m.lower()]
-        return sorted(chat, key=lambda m: ("nemotron" not in m.lower(), m.lower()))
+        chat = [m for m in catalog if m.lower().startswith("nvidia/") and "embedding" not in m.lower()]
+        tier = {"nano": 0, "super": 1, "ultra": 2}
+        def order(m: str) -> tuple:
+            low = m.lower()
+            rank = next((r for k, r in tier.items() if k in low), 3)
+            return ("nemotron-3-" not in low, rank, low)  # Nemotron 3 by size, then newer families
+        return sorted(chat, key=order)
 
     def step_models(self, overrides: Optional[dict] = None) -> dict[str, str]:
         """Resolves the model for each pipeline step, ignoring overrides that are not in the catalog."""
@@ -185,6 +196,18 @@ class LLM:
             pick = str((overrides or {}).get(step) or "").strip()
             out[step] = pick if pick and (pick in allowed or not self.available) else self.models[role]
         return out
+
+    def substitutions(self, overrides: Optional[dict], resolved: dict[str, str]) -> list[str]:
+        """Human-readable notes for requested models that could not be used, so fallbacks are never silent."""
+        notes = []
+        for step, model in resolved.items():
+            asked = str((overrides or {}).get(step) or "").strip()
+            if asked and asked != model:
+                notes.append(f"{step.capitalize()} model {asked} is unavailable in the current catalog; using {model} instead.")
+        return notes
+
+    def presets(self) -> dict[str, dict[str, str]]:
+        return {name: {step: self.models[role] for step, role in roles.items()} for name, roles in PRESET_ROLES.items()}
 
     def info(self) -> dict:
         return {"mock": self.mock, "base_url": self.base_url, "models": self.models}

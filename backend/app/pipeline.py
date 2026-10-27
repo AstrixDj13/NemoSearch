@@ -12,8 +12,12 @@ import re
 import time
 from typing import AsyncIterator
 
+from .connectors import utc_now
 from .llm import LLM, RunStats, extract_json
+from .scholarly import Scholarly, academic_intent, coverage_summary
 from .search import Search
+
+CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 
 def _sentences(text: str) -> list[str]:
@@ -73,7 +77,14 @@ async def read(llm: LLM, stats: RunStats, question: str, src: dict, model: str |
         '  "facts": ["<fact 1>", "<fact 2>"]\n'
         '}'
     )
-    user = f"QUESTION: {question}\n\nSOURCE TITLE: {src['title']}\nURL: {src['url']}\n\nDOCUMENT:\n{src['content'][:5500]}"
+    kind = (
+        "SOURCE TYPE: scholarly paper; only its abstract was retrieved (metadata record, full text NOT read)\n"
+        if src.get("kind") == "paper" else ""
+    )
+    user = (
+        f"QUESTION: {question}\n\n{kind}SOURCE TITLE: {src['title']}\nURL: {src['url']}\n\n"
+        f"{'ABSTRACT' if kind else 'DOCUMENT'}:\n{src['content'][:5500]}"
+    )
 
     def mock() -> str:
         import json
@@ -137,7 +148,13 @@ def _evidence_block(sources: dict[int, dict], notes: list[dict]) -> str:
         s = sources[n["id"]]
         facts = "\n".join(f"  - {f}" for f in n["facts"])
         quote_line = f"  Verified quote: \"{n['quote']}\"" if n.get("quote") else ""
-        parts.append(f"[{n['id']}] {s['title']} ({s['domain']})\n  Summary: {n['summary']}\n{quote_line}\n{facts}")
+        if s.get("kind") == "paper":
+            meta = s["paper"]
+            origin = ", ".join(str(x) for x in (meta["venue"], meta["year"]) if x) or "venue unknown"
+            label = f"scholarly paper, {origin}; abstract only"
+        else:
+            label = s["domain"]
+        parts.append(f"[{n['id']}] {s['title']} ({label})\n  Summary: {n['summary']}\n{quote_line}\n{facts}")
     return "\n\n".join(parts)
 
 
@@ -168,7 +185,8 @@ def _mock_report(question: str, sources: dict[int, dict], notes: list[dict], gap
 
 # ---------------------------------------------------------------- orchestrator
 async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: Search,
-                       models: dict | None = None, provider: str | None = None) -> AsyncIterator[dict]:
+                       models: dict | None = None, provider: str | None = None,
+                       scholarly: Scholarly | None = None) -> AsyncIterator[dict]:
     t_start = time.perf_counter()
     stats = RunStats()
     deep = depth == "deep"
@@ -177,7 +195,14 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     seen_urls: set[str] = set()
     notes: list[dict] = []
     step_models = llm.step_models(models)
+    notices = llm.substitutions(models, step_models)
+    if provider and search.resolve_provider(provider) != provider:
+        notices.append(f"Search provider {provider} is unavailable; using {search.provider} instead.")
     provider = search.resolve_provider(provider)
+    academic, academic_reason = academic_intent(question, focus) if scholarly else (False, "")
+    connector_labels = {c.name: c.label for c in scholarly.connectors} if scholarly else {}
+    web_log: list[dict] = []
+    scholarly_log: list[dict] = []
 
     def stage(agent: str, status: str, detail: str = "", step: str | None = None) -> dict:
         ev = {"type": "stage", "agent": agent, "status": status, "detail": detail}
@@ -187,8 +212,11 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
 
     yield {
         "type": "init", "question": question, "depth": depth, "focus": focus,
-        "mock": llm.mock, "models": step_models, "search_provider": provider
+        "mock": llm.mock, "models": step_models, "search_provider": provider,
+        "scholarly": {"enabled": academic, "reason": academic_reason, "connectors": list(connector_labels.values())},
     }
+    for message in notices:
+        yield {"type": "notice", "message": message}
 
     # 1. PLAN -----------------------------------------------------------
     yield stage("planner", "running", f"Decomposing question for {focus.upper()} focus", "planner")
@@ -198,10 +226,37 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
 
     async def scout_and_read(queries: list[str], round_no: int):
         # 2. SCOUT ------------------------------------------------------
-        yield stage("scout", "running", f"Round {round_no}: searching {len(queries)} queries via {provider} [{focus}]")
-        results = await asyncio.gather(*(search.search(q, 4 if deep else 3, focus, provider) for q in queries))
+        via = f"{provider}" + (" + " + " + ".join(connector_labels.values()) if academic else "")
+        yield stage("scout", "running", f"Round {round_no}: searching {len(queries)} queries via {via} [{focus}]")
+        k = 4 if deep else 3
+
+        async def web(q: str) -> list[dict]:
+            sent_at = utc_now()
+            hits = await search.search(q, k, focus, provider)
+            web_log.append({"provider": provider, "query": q, "sent_at": sent_at, "results": len(hits), "round": round_no})
+            for h in hits:
+                h.setdefault("kind", "web")
+                h.setdefault("access", "page")
+                h.setdefault("retrieved_at", utc_now())
+            return hits
+
+        async def papers() -> list[dict]:
+            if not academic:
+                return []
+            found, records = await scholarly.search(queries, k)
+            scholarly_log.extend({**r.to_dict(), "round": round_no} for r in records)
+            return found
+
+        *web_batches, paper_batch = await asyncio.gather(*(web(q) for q in queries), papers())
+        if academic:
+            round_records = [r for r in scholarly_log if r["round"] == round_no]
+            yield {"type": "scholarly", "round": round_no, "queries": round_records}
+            summary = coverage_summary(round_records, connector_labels)
+            if summary["failed"]:
+                yield {"type": "warning", "scope": "scholarly", "message": summary["message"]}
+
         new: list[dict] = []
-        for batch in results:
+        for batch in [*web_batches, paper_batch]:
             for r in batch:
                 if not r["url"] or r["url"] in seen_urls:
                     continue
@@ -213,7 +268,8 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
                     "type": "source",
                     "source": {k: v for k, v in r.items() if k != "content"} | {"snippet": r["content"][:280]}
                 }
-        yield stage("scout", "done", f"{len(sources)} unique sources")
+        n_papers = sum(1 for s in sources.values() if s.get("kind") == "paper")
+        yield stage("scout", "done", f"{len(sources)} unique sources" + (f", {n_papers} scholarly" if academic else ""))
 
         # 3. READ (parallel) ---------------------------------------------
         if not new:
@@ -222,6 +278,11 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         sem = asyncio.Semaphore(5)
 
         async def guarded(src):
+            if src.get("access") == "metadata":
+                return {
+                    "id": src["id"], "relevance": 0, "quote": "", "facts": [], "metadata_only": True,
+                    "summary": "No abstract is available, so only bibliographic metadata was retrieved; not used as evidence.",
+                }
             async with sem:
                 try:
                     return await read(llm, stats, question, src, model=step_models["reader"])
@@ -260,7 +321,7 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
             yield ev
         relevant = sorted([n for n in notes if n["relevance"] >= 3], key=lambda n: -n["relevance"])
 
-    evidence = relevant[:12] or sorted(notes, key=lambda n: -n["relevance"])[:8]
+    evidence = relevant[:12] or sorted([n for n in notes if not n.get("metadata_only")], key=lambda n: -n["relevance"])[:8]
 
     # 5. WRITE (streamed, Ultra reasoning) --------------------------------
     yield stage("writer", "running", "Synthesizing research brief with reasoning", "writer")
@@ -275,7 +336,12 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         "- '## Limitations & Open Questions' (address gaps identified by the critic)\n"
         "- '## Bottom Line'\n"
         "MANDATORY: Cite every single factual assertion with bracketed source numbers like [2] or [1][4]. "
-        "Never hallucinate facts or citation numbers. Aim for high density and analytical depth (~600-900 words)."
+        "Never hallucinate facts or citation numbers. Aim for high density and analytical depth (~600-900 words).\n"
+        "Sources marked 'scholarly paper ... abstract only' were retrieved as metadata records: report what their "
+        "abstracts state, never imply the full paper was read, and never add papers, authors or DOIs that are not "
+        "in the evidence."
+        + ("\nNOTE: scholarly search failed for some queries, so state in Limitations that coverage of the "
+           "academic literature is incomplete." if coverage_summary(scholarly_log, connector_labels)["failed"] else "")
     )
     user = (
         f"QUESTION: {question}\nFOCUS MODE: {focus.upper()}\n\n"
@@ -284,14 +350,37 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     )
     t_w = time.perf_counter()
     first_token = None
+    written = ""
     async for kind, delta in llm.stream(
         "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user}], stats,
         mock=lambda: _mock_report(question, sources, evidence, c["gaps"]), model=step_models["writer"],
     ):
         if first_token is None:
             first_token = time.perf_counter() - t_w
+        if kind != "think":
+            written += delta
         yield {"type": "think" if kind == "think" else "report", "delta": delta}
     yield stage("writer", "done", "Report complete", "writer")
+
+    # Every citation must point at a source this run actually retrieved
+    cited = {int(n) for group in CITATION.findall(written) for n in group.split(",")}
+    unknown = sorted(cited - set(sources))
+    if unknown:
+        yield {"type": "warning", "scope": "citations",
+               "message": f"The brief cites {', '.join(f'[{n}]' for n in unknown)}, which match no retrieved source; "
+                          "they are marked as unverified."}
+
+    scholarly_summary = coverage_summary(scholarly_log, connector_labels) if academic else coverage_summary([], {})
+    coverage = {
+        "academic": academic,
+        "reason": academic_reason,
+        "web": web_log,
+        "scholarly": scholarly_log,
+        "scholarly_status": scholarly_summary["status"],
+        "warnings": [m for m in [scholarly_summary["message"]] if m],
+        "unverified_citations": unknown,
+        "complete": scholarly_summary["status"] in ("complete", "skipped") and not unknown,
+    }
 
     # Complete snapshot payload so frontend can hold thread memory
     yield {
@@ -301,10 +390,13 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         "stats": stats.to_dict(),
         "n_sources": len(sources),
         "n_used": len(evidence),
+        "n_papers": sum(1 for s in sources.values() if s.get("kind") == "paper"),
+        "coverage": coverage,
         "notes": notes,
         "sources": {
             s["id"]: {
                 "id": s["id"], "title": s["title"], "url": s["url"], "domain": s["domain"],
+                **{key: s[key] for key in ("kind", "access", "provider", "query", "retrieved_at", "paper") if key in s},
                 "quote": next((n.get("quote", "") for n in notes if n["id"] == s["id"]), ""),
                 "summary": next((n.get("summary", "") for n in notes if n["id"] == s["id"]), ""),
                 "relevance": next((n.get("relevance", 0) for n in notes if n["id"] == s["id"]), 0),
@@ -330,7 +422,8 @@ def _prior_sources_block(sources: dict) -> tuple[str, int]:
     return "\n".join(lines), max_id
 
 
-def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: list[dict]) -> tuple[str, str]:
+def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: list[dict],
+                   earlier: str = "") -> tuple[str, str]:
     think = (
         f"The user follows up on \"{prior_question}\" asking \"{question}\". "
         "Re-reading the prior brief and its verified quotes to answer with citations.\n"
@@ -342,7 +435,8 @@ def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: 
     extra = "\n".join(f"- {h['title']} [{h['id']}]" for h in new_hits)
     text = (
         "> ⚠️ *Demo mode: generated without a Nebius API key.*\n\n"
-        f"**Short answer:** based on the prior research, here is what the evidence says about *{question.rstrip('?')}*.\n\n"
+        + (f"*Following on from your earlier question, “{earlier}”.*\n\n" if earlier else "")
+        +         f"**Short answer:** based on the prior research, here is what the evidence says about *{question.rstrip('?')}*.\n\n"
         f"{bullets}\n"
         + (f"\n**Additional sources found:**\n{extra}\n" if extra else "")
     )
@@ -351,16 +445,27 @@ def _mock_followup(question: str, prior_question: str, sources: dict, new_hits: 
 
 async def answer_followup(question: str, prior_question: str, prior_report: str,
                           sources: dict, llm: LLM, search: Search, focus: str = "web",
-                          models: dict | None = None, provider: str | None = None) -> AsyncIterator[dict]:
-    """Interactive follow-up conversation answering specific questions grounded in prior report and sources."""
+                          models: dict | None = None, provider: str | None = None,
+                          history: list | None = None) -> AsyncIterator[dict]:
+    """Interactive follow-up conversation answering specific questions grounded in prior report and sources.
+
+    `history` holds the thread's earlier turns ([{"question", "answer"}], oldest first) so questions like
+    "and what about the second one?" resolve against what was already discussed.
+    """
     stats = RunStats()
     step_models = llm.step_models(models)
+    turns = [
+        (str(t.get("question", "")).strip(), str(t.get("answer", "")).strip())
+        for t in (history or []) if isinstance(t, dict) and t.get("question") and t.get("answer")
+    ][-6:]  # the most recent turns are enough context and keep the prompt bounded
+    thread_text = "\n\n".join(f"Q{i}: {q}\nA{i}: {a[:1200]}" for i, (q, a) in enumerate(turns, start=1))
 
     # Determine if new search is needed or if prior evidence suffices
     eval_prompt = (
         f"You are an assistant evaluating if a follow-up user question can be answered from existing research.\n"
         f"PRIOR TOPIC: {prior_question}\n"
-        f"FOLLOW-UP QUESTION: {question}\n\n"
+        + (f"EARLIER FOLLOW-UPS IN THIS THREAD:\n{thread_text}\n" if thread_text else "")
+        + f"FOLLOW-UP QUESTION: {question}\n\n"
         f"EXISTING REPORT EXCERPT:\n{prior_report[:2000]}\n\n"
         'Respond with ONLY JSON: {"needs_web_search": true/false, "search_query": "<if true, precise 4-8 word query, else empty>"}'
     )
@@ -393,6 +498,8 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
         "Answer the user's follow-up question specifically, concisely, and factually based on the research report "
         "and numbered sources provided. Maintain bracketed citations [n] matching the source numbers whenever "
         "referencing source material; never invent citation numbers. "
+        "The conversation so far is included: resolve references such as 'it' or 'the second one' against "
+        "earlier questions and answers, and don't repeat earlier answers unless asked. "
         "Format cleanly in Markdown with bold key takeaways."
     )
     user_msg = (
@@ -403,10 +510,19 @@ async def answer_followup(question: str, prior_question: str, prior_report: str,
         f"USER FOLLOW-UP QUESTION:\n{question}"
     )
 
+    # Earlier turns go in as real conversation turns, the newest question (with its evidence) last
+    conversation = [{"role": "system", "content": sys}]
+    for i, (q, a) in enumerate(turns):
+        conversation += [
+            {"role": "user", "content": q if i else f"ORIGINAL TOPIC: {prior_question}\n\nFOLLOW-UP QUESTION:\n{q}"},
+            {"role": "assistant", "content": a[:4000]},
+        ]
+    conversation.append({"role": "user", "content": user_msg})
+
     async for kind, delta in llm.stream(
-        "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user_msg}], stats,
+        "ultra", conversation, stats,
         max_tokens=3000, temperature=0.4,
-        mock=lambda: _mock_followup(question, prior_question, sources, new_hits), model=step_models["writer"],
+        mock=lambda: _mock_followup(question, prior_question, sources, new_hits, turns[-1][0] if turns else ""), model=step_models["writer"],
     ):
         yield {"type": "followup_delta", "kind": kind, "delta": delta}
 

@@ -11,6 +11,54 @@ export interface Source {
   quote: string
   summary?: string
   snippet?: string
+  /** 'paper' for scholarly metadata records, 'web' for pages; absent on older saved reports */
+  kind?: 'paper' | 'web'
+  /** What was actually read: a web page's text, a paper's abstract, or bibliographic metadata only */
+  access?: 'page' | 'abstract' | 'metadata'
+  provider?: string
+  /** The exact query that returned this source */
+  query?: string
+  /** ISO time the provider answered */
+  retrieved_at?: string
+  paper?: PaperMeta
+}
+
+export interface PaperMeta {
+  connector: string
+  connector_label: string
+  /** The provider's own identifier, e.g. https://openalex.org/W… */
+  source_id: string
+  authors: string[]
+  year: number | null
+  venue: string
+  doi: string
+  work_type: string
+  status: 'published' | 'preprint' | 'accepted' | 'retracted' | 'unknown'
+  is_open_access: boolean
+  oa_url: string
+}
+
+export interface ConnectorQuery {
+  connector: string
+  query: string
+  sent_at: string
+  status: 'pending' | 'ok' | 'cached' | 'failed'
+  results: number
+  attempts: number
+  error: string
+  cached_from: string
+  round: number
+}
+
+export interface RunCoverage {
+  academic: boolean
+  reason: string
+  web: { provider: string; query: string; sent_at: string; results: number; round: number }[]
+  scholarly: ConnectorQuery[]
+  scholarly_status: 'complete' | 'partial' | 'failed' | 'skipped'
+  warnings: string[]
+  unverified_citations: number[]
+  complete: boolean
 }
 
 export interface SlideItem {
@@ -21,13 +69,27 @@ export interface SlideItem {
 
 export interface SavedReport {
   id: string
+  /** Short display title; editable */
   title: string
+  /** The research question as the user asked it */
+  question?: string
+  /** Epoch ms; older saved reports only have the static `time` label */
+  createdAt?: number
+  archived?: boolean
+  /** Owning project; null or absent means Unassigned */
+  projectId?: string | null
+  /** False for placeholder entries that have no stored report body */
+  hasReport?: boolean
   mode: string
   time: string
   sources: number
   reportText?: string
   sourcesData?: Source[]
   reasoningTrace?: string
+  /** What the run searched and whether any coverage is missing */
+  coverage?: RunCoverage
+  /** Follow-up questions asked about this report, oldest first */
+  followups?: FollowUpRecord[]
   stats?: {
     elapsed?: number
     ttft?: number
@@ -85,3 +147,56 @@ export const recentReports: SavedReport[] = [
   { id: 'sample-2', title: 'The infrastructure behind real-time multimodal agents', mode: 'All web', time: 'Yesterday', sources: 18 },
   { id: 'sample-3', title: 'How inference economics are changing AI product design', mode: 'Finance', time: 'Oct 22', sources: 9 },
 ]
+
+export interface Project {
+  id: string
+  name: string
+  description: string
+  notes: string
+  archived: boolean
+  createdAt: number
+  updatedAt: number
+  counts: { reports: number; sources: number; attachments: number; exports: number }
+}
+
+export interface SavedSourceRecord {
+  id: string
+  projectId: string | null
+  reportId: string | null
+  url: string
+  title: string
+  source: Source
+  createdAt: number
+}
+
+export interface AttachmentRecord {
+  id: string
+  filename: string
+  contentType: string
+  size: number
+  createdAt: number
+}
+
+export interface ExportRecord {
+  id: string
+  reportId: string | null
+  kind: string
+  filename: string
+  downloadable: boolean
+  createdAt: number
+}
+
+export interface ProjectDetail extends Project {
+  sources: SavedSourceRecord[]
+  attachments: AttachmentRecord[]
+  exports: ExportRecord[]
+}
+
+/** Which research the sidebar and library show: everything, Unassigned, or one project id */
+export type ResearchScope = 'all' | 'unassigned' | string
+
+export interface FollowUpRecord {
+  question: string
+  answer: string
+  createdAt?: number
+}

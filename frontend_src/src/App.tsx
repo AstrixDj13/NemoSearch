@@ -2,20 +2,27 @@ import { useEffect, useRef, useState, useMemo } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Archive,
+  ArchiveRestore,
   ArrowUpRight,
   BookOpen,
+  Bookmark,
+  BookmarkCheck,
   BrainCircuit,
   ChartNoAxesCombined,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock3,
   Copy,
+  CopyPlus,
   Download,
   ExternalLink,
   FileText,
+  FolderOpen,
+  FolderPlus,
   Globe2,
   GraduationCap,
   Library,
@@ -26,22 +33,43 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PenLine,
+  Pencil,
   Plus,
   Presentation,
   ScanSearch,
   Search,
   Share2,
+  Trash2,
   ShieldCheck,
+  SlidersHorizontal,
   X,
 } from 'lucide-react'
 import DotField from './components/DotField'
+import DeleteProjectDialog from './components/DeleteProjectDialog'
+import ItemMenu from './components/ItemMenu'
+import ProjectDialog from './components/ProjectDialog'
+import ProjectWorkspace from './components/ProjectWorkspace'
+import { api } from './api'
+import RoutingEditor from './components/RoutingEditor'
+import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './components/SourceProvenance'
+import { isPaper, sourceOrigin } from './sources'
+import { byRecency, makeTitle, normalizeReports, reportTime, runNumbers } from './library'
 import {
   defaultResearchSteps,
-  recentReports as initialRecentReports,
   sampleSources,
   SAMPLE_QUERY,
 } from './data'
-import type { FocusMode, SavedReport, SlideItem, Source, View } from './data'
+import type { FocusMode, Project, ResearchScope, RunCoverage, SavedReport, SlideItem, Source, View } from './data'
+import {
+  fallbackPresets,
+  loadRouting,
+  modelLabel,
+  presetInfo,
+  routingModels,
+  storeRouting,
+  teamSteps,
+} from './routing'
+import type { Preset, Routing, RoutingScope, TeamModels } from './routing'
 import './App.css'
 
 const focusOptions: { id: FocusMode; label: string; icon: typeof Globe2 }[] = [
@@ -53,43 +81,12 @@ const focusOptions: { id: FocusMode; label: string; icon: typeof Globe2 }[] = [
 
 const stepIcons = [BrainCircuit, ScanSearch, BookOpen, ShieldCheck, PenLine]
 
-// Pipeline steps in run order; keys match the backend's per-step model overrides
-type TeamStep = 'planner' | 'scout' | 'reader' | 'critic' | 'writer'
-type TeamModels = Record<TeamStep, string>
-const teamSteps: { key: TeamStep; name: string }[] = [
-  { key: 'planner', name: 'Planner' },
-  { key: 'scout', name: 'Scout' },
-  { key: 'reader', name: 'Readers' },
-  { key: 'critic', name: 'Critic' },
-  { key: 'writer', name: 'Lead analyst' },
+const examplePrompts = [
+  { label: 'Dense vs. mixture-of-experts', query: SAMPLE_QUERY },
+  { label: 'Real-time multimodal agents', query: 'Map the emerging stack for real-time multimodal agents' },
+  { label: 'Inference costs and margins', query: 'How do inference costs change AI product margins?' },
 ]
-const recommendedTeam: TeamModels = {
-  planner: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
-  scout: 'tavily',
-  reader: 'nvidia/nemotron-3-super-120b-a12b',
-  critic: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
-  writer: 'nvidia/Nemotron-3-Ultra-550b-a55b',
-}
-const modelLabels: Record<string, string> = {
-  'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B': 'Nemotron 3 Nano · 30B',
-  'nvidia/nemotron-3-super-120b-a12b': 'Nemotron 3 Super · 120B',
-  'nvidia/Nemotron-3-Ultra-550b-a55b': 'Nemotron 3 Ultra · 550B',
-  tavily: 'Tavily AI Search',
-  wikipedia: 'Wikipedia Search',
-}
-const modelLabel = (id: string) => modelLabels[id] || id.split('/').pop() || id
 
-const loadTeamPrefs = (): { recommended: boolean; models: TeamModels } => {
-  try {
-    const stored = JSON.parse(localStorage.getItem('nemosearch_team') || 'null')
-    if (stored && typeof stored.recommended === 'boolean') {
-      return { recommended: stored.recommended, models: { ...recommendedTeam, ...stored.models } }
-    }
-  } catch {
-    // Fall back to the recommended team
-  }
-  return { recommended: true, models: recommendedTeam }
-}
 const viewNames: Record<View, string> = {
   home: 'New research',
   running: 'Research in progress',
@@ -116,6 +113,20 @@ interface BackendSource {
   summary?: string
   snippet?: string
   relevance?: number
+  kind?: Source['kind']
+  access?: Source['access']
+  provider?: string
+  query?: string
+  retrieved_at?: string
+  paper?: Source['paper']
+}
+
+interface FollowUpTurn {
+  question: string
+  answer: string
+  status: 'streaming' | 'done' | 'error'
+  /** Progress or problem text shown under the answer */
+  note?: string
 }
 
 interface BackendSlide {
@@ -126,13 +137,19 @@ interface BackendSlide {
 const toSource = (s: BackendSource, fallbackRelevance = 85): Source => ({
   id: s.id,
   title: s.title || 'Untitled source',
-  authors: s.domain || 'Web source',
+  authors: s.paper ? s.paper.authors.join(', ') : s.domain || 'Web source',
   domain: s.domain || 'web',
   url: s.url || '#',
   relevance: typeof s.relevance === 'number' ? Math.round(s.relevance * 10) : fallbackRelevance,
   quote: s.quote || s.snippet || s.summary || '',
   summary: s.summary,
   snippet: s.snippet,
+  kind: s.kind,
+  access: s.access,
+  provider: s.provider,
+  query: s.query,
+  retrieved_at: s.retrieved_at,
+  paper: s.paper,
 })
 
 function Logo({ compact = false }: { compact?: boolean }) {
@@ -154,13 +171,17 @@ function IconButton({ label, children, onClick, className = '' }: { label: strin
 
 function Citation({ id, source, onOpen }: { id: number; source?: Source; onOpen: (source: Source) => void }) {
   if (!source) {
-    return <span className="citation">[{id}]</span>
+    return (
+      <span className="citation unverified" title="No retrieved source has this number">
+        [{id}]<span className="visually-hidden"> (unverified: no retrieved source has this number)</span>
+      </span>
+    )
   }
   return (
     <span className="citation-wrap">
       <button type="button" className="citation" onClick={() => onOpen(source)} aria-label={`Verify source ${id}: ${source.title}`}>[{id}]</button>
       <span className="citation-hover" role="tooltip">
-        <span className="citation-hover-top"><span>{source.domain}</span><span>{source.relevance}% match</span></span>
+        <span className="citation-hover-top"><span>{isPaper(source) ? `Paper · ${sourceOrigin(source)}` : source.domain}</span><span>{source.relevance}% match</span></span>
         <strong>{source.title}</strong>
         <span className="citation-quote">“{source.quote || source.summary || source.snippet}”</span>
         <span className="citation-verify"><Check size={13} /> Click to inspect evidence</span>
@@ -204,7 +225,8 @@ function InlineContent({ text, sourceMap, onOpenSource }: { text: string; source
       return part
     })
 
-  return <>{renderInline(text, 'i')}</>
+  // Stray heading markers inside bullets or snippets are noise, not structure
+  return <>{renderInline(text.replace(/(^|\s)#{1,6}\s+/g, '$1'), 'i')}</>
 }
 
 type ReportBlock =
@@ -431,52 +453,79 @@ export default function App() {
   const [slidesData, setSlidesData] = useState<SlideItem[]>(defaultSlides)
   const [attachment, setAttachment] = useState('')
   const [toast, setToast] = useState('')
+  const [toastAction, setToastAction] = useState<{ label: string; run: () => void } | null>(null)
+  const [toastTone, setToastTone] = useState<'info' | 'error'>('info')
   const [libraryFilter, setLibraryFilter] = useState('')
   const [followUp, setFollowUp] = useState('')
-  const [followUpResponse, setFollowUpResponse] = useState('')
+  // The whole follow-up conversation for the open report, oldest turn first
+  const [thread, setThread] = useState<FollowUpTurn[]>([])
   const [followUpSending, setFollowUpSending] = useState(false)
-  const [followUpSent, setFollowUpSent] = useState(false)
 
   // Live Research States
   const [liveSteps, setLiveSteps] = useState(defaultResearchSteps)
   const [liveSources, setLiveSources] = useState<Source[]>(sampleSources)
+  const [runCoverage, setRunCoverage] = useState<RunCoverage | null>(null)
+  const [runWarnings, setRunWarnings] = useState<string[]>([])
   const [liveReport, setLiveReport] = useState<string>('')
   const [liveReasoning, setLiveReasoning] = useState<string>('')
   const [liveStats, setLiveStats] = useState<{ elapsed?: number; ttft?: number; nSources?: number; gaps?: string[] }>({})
   const [isLiveRun, setIsLiveRun] = useState(false)
   const [healthStatus, setHealthStatus] = useState<{ ok: boolean; provider?: string }>({ ok: true })
 
-  // Research team routing: recommended models, or a custom model per step
-  const [teamOpen, setTeamOpen] = useState(false)
-  const [teamDefaults, setTeamDefaults] = useState<TeamModels>(recommendedTeam)
+  // Research routing: the saved default, optionally overridden for the next run only
+  const [presets, setPresets] = useState<Record<Preset, TeamModels>>(fallbackPresets)
   const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [catalogStatus, setCatalogStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [providerOptions, setProviderOptions] = useState<string[]>(['tavily', 'wikipedia'])
-  const [useRecommended, setUseRecommended] = useState(() => loadTeamPrefs().recommended)
-  const [customTeam, setCustomTeam] = useState<TeamModels>(() => loadTeamPrefs().models)
-  const [teamAnnouncement, setTeamAnnouncement] = useState('')
-  const teamToggleRef = useRef<HTMLButtonElement>(null)
-  const teamModels = useRecommended ? teamDefaults : customTeam
+  const [savedRouting, setSavedRouting] = useState<Routing>(loadRouting)
+  const [nextRunRouting, setNextRunRouting] = useState<Routing | null>(null)
+  const [runModels, setRunModels] = useState<TeamModels | null>(null)
+  const [routingOpen, setRoutingOpen] = useState(false)
+  const routingOpener = useRef<HTMLElement | null>(null)
+  const activeRouting = nextRunRouting ?? savedRouting
+  const teamModels = routingModels(activeRouting, presets)
+  const routingLabel = presetInfo[activeRouting.preset].label + (nextRunRouting ? ' · next run' : '')
 
   // Library persisted in localStorage
-  const [libraryReports, setLibraryReports] = useState<SavedReport[]>(() => {
+  // Research history and projects live on the NemoSearch server, not in the browser
+  const [libraryReports, setLibraryReports] = useState<SavedReport[]>([])
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [historyError, setHistoryError] = useState('')
+  const [projects, setProjects] = useState<Project[]>([])
+  const [scope, setScope] = useState<ResearchScope>(() => {
     try {
-      const stored = localStorage.getItem('nemosearch_library')
-      if (stored) return JSON.parse(stored)
+      return localStorage.getItem('nemosearch_scope') || 'all'
     } catch {
-      // fallback
+      return 'all'
     }
-    return initialRecentReports
   })
+  const [runProject, setRunProject] = useState(() => (scope !== 'all' && scope !== 'unassigned' ? scope : ''))
+  const [projectDialog, setProjectDialog] = useState<{ mode: 'create' | 'rename'; project?: Project; forRun?: boolean } | null>(null)
+  const [deletingProject, setDeletingProject] = useState<Project | null>(null)
+  const [workspaceKey, setWorkspaceKey] = useState(0)
+  const [savedSourceIds, setSavedSourceIds] = useState<Record<string, string>>({})
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
+  const dialogOpener = useRef<HTMLElement | null>(null)
+  const [activeReportId, setActiveReportId] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; place: 'sidebar' | 'library' } | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
+  // Re-renders relative timestamps ("5m ago") once a minute
+  const [now, setNow] = useState(() => Date.now())
 
   const searchRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const toastTimer = useRef<number | undefined>(undefined)
   const activeEventSource = useRef<EventSource | null>(null)
 
-  const notify = (message: string) => {
+  const notify = (message: string, action?: { label: string; run: () => void }, tone: 'info' | 'error' = 'info') => {
     setToast(message)
+    setToastTone(tone)
+    setToastAction(action ?? null)
     window.clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(''), 3200)
+    toastTimer.current = window.setTimeout(() => {
+      setToast('')
+      setToastAction(null)
+    }, action || tone === 'error' ? 7000 : 3200)
   }
 
   // Fetch health status on mount
@@ -488,22 +537,23 @@ export default function App() {
     fetch('/api/models')
       .then((res) => res.json())
       .then((data) => {
-        if (data.defaults) setTeamDefaults({ ...recommendedTeam, ...data.defaults })
+        if (data.presets) {
+          setPresets({
+            fast: { ...fallbackPresets.fast, ...data.presets.fast },
+            balanced: { ...fallbackPresets.balanced, ...data.presets.balanced },
+            thorough: { ...fallbackPresets.thorough, ...data.presets.thorough },
+          })
+        }
         if (Array.isArray(data.models)) setModelOptions(data.models)
+        setCatalogStatus('ready')
         if (Array.isArray(data.search_providers)) setProviderOptions(data.search_providers)
       })
       .catch(() => {
-        // Keep the built-in recommended team
+        // Keep the built-in presets; the editor explains that other models can't be listed
+        setCatalogStatus('error')
       })
   }, [])
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('nemosearch_team', JSON.stringify({ recommended: useRecommended, models: customTeam }))
-    } catch {
-      // Preference is optional
-    }
-  }, [useRecommended, customTeam])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -533,6 +583,51 @@ export default function App() {
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), [])
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const loadHistory = async () => {
+    setHistoryStatus('loading')
+    try {
+      // One-time move of history the browser kept before server persistence existed
+      const legacy = localStorage.getItem('nemosearch_library')
+      if (legacy) {
+        await api.importReports(normalizeReports(JSON.parse(legacy)))
+        localStorage.removeItem('nemosearch_library')
+      }
+    } catch {
+      // Leave the old copy in place; the import is retried on the next load
+    }
+    try {
+      const [reports, projectList] = await Promise.all([api.listReports('all'), api.listProjects()])
+      setLibraryReports(reports)
+      setProjects(projectList)
+      setHistoryStatus('ready')
+    } catch (e) {
+      setHistoryError((e as Error).message)
+      setHistoryStatus('error')
+    }
+  }
+
+  useEffect(() => {
+    loadHistory()
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nemosearch_scope', scope)
+    } catch {
+      // View preference only
+    }
+  }, [scope])
+
+  const refreshProjects = () => {
+    api.listProjects().then(setProjects).catch(() => undefined)
+    setWorkspaceKey((key) => key + 1)
+  }
+
   const navigate = (nextView: View) => {
     setView(nextView)
     setSidebarOpen(false)
@@ -546,8 +641,9 @@ export default function App() {
     }
     setQuery('')
     setAttachment('')
-    setFollowUpSent(false)
-    setFollowUpResponse('')
+    setAttachmentFile(null)
+    setActiveReportId(null)
+    setThread([])
     setRunStep(0)
     navigate('home')
   }
@@ -576,15 +672,17 @@ export default function App() {
     }
 
     setSubmittedQuery(cleanQuery)
+    setActiveReportId(null)
     setRunStep(0)
     setElapsedTime(1)
-    setFollowUpSent(false)
-    setFollowUpResponse('')
+    setThread([])
     setSidebarOpen(false)
     setIsLiveRun(true)
     setLiveReport('')
     setLiveReasoning('')
     setLiveSources([])
+    setRunCoverage(null)
+    setRunWarnings([])
     setLiveSteps([
       { name: 'Planner', model: modelLabel(teamModels.planner), detail: 'Decomposing question into research paths...' },
       { name: 'Scout', model: modelLabel(teamModels.scout), detail: 'Preparing live search across primary sources...' },
@@ -595,7 +693,29 @@ export default function App() {
     setView('running')
 
     // Connect to real FastAPI SSE endpoint
-    const params = new URLSearchParams({ q: cleanQuery, depth: deepMode ? 'deep' : 'quick', focus: focusMode, ...teamOverrides() })
+    const params = new URLSearchParams({
+      q: cleanQuery,
+      depth: deepMode ? 'deep' : 'quick',
+      focus: focusMode,
+      title: makeTitle(cleanQuery),
+      ...(runProject ? { project_id: runProject } : {}),
+      ...routingParams(teamModels, activeRouting.preset),
+    })
+    if (attachmentFile) {
+      if (runProject) {
+        api
+          .uploadAttachment(runProject, attachmentFile)
+          .then(() => refreshProjects())
+          .catch((e: Error) => notify(`Couldn't attach “${attachmentFile.name}”: ${e.message}`, undefined, 'error'))
+      } else {
+        notify(`“${attachmentFile.name}” wasn't kept: files are stored inside projects. Choose a project to keep attachments.`, undefined, 'error')
+      }
+      setAttachment('')
+      setAttachmentFile(null)
+    }
+    // Follow-ups and slides for this run keep the models it ran with
+    setRunModels(teamModels)
+    setNextRunRouting(null)
     const url = `/api/research?${params}`
     let accumulatedReport = ''
     let accumulatedReasoning = ''
@@ -681,10 +801,10 @@ export default function App() {
             accumulatedReport += data.delta
             setLiveReport(accumulatedReport)
           } else if (data.type === 'done') {
+            // Keep listening: the server sends `saved` (with the stored report's id) and then `end`
             finished = true
-            es.close()
-            activeEventSource.current = null
             setRunStep(5)
+            setRunCoverage(data.coverage ?? null)
             setLiveStats({
               elapsed: data.elapsed,
               ttft: data.ttft_writer,
@@ -698,34 +818,26 @@ export default function App() {
               setLiveSources(fullSources)
             }
 
-            // Save completed report into Library
-            const newSaved: SavedReport = {
-              id: `report-${Date.now()}`,
-              title: cleanQuery,
-              mode: focusOptions.find((o) => o.id === focusMode)?.label || 'All web',
-              time: 'Just now',
-              sources: collectedSources.length || 12,
-              reportText: accumulatedReport,
-              sourcesData: collectedSources,
-              reasoningTrace: accumulatedReasoning,
-            }
-            setLibraryReports((prev) => {
-              const next = [newSaved, ...prev.filter((p) => p.title !== cleanQuery)]
-              try {
-                localStorage.setItem('nemosearch_library', JSON.stringify(next))
-              } catch {
-                // Ignore storage limits
-              }
-              return next
-            })
-
             // Switch to report view
             window.setTimeout(() => {
               setView('report')
               setReportTab('brief')
             }, 600)
+          } else if (data.type === 'saved') {
+            // The server stored the finished report (in its project, or Unassigned)
+            const saved: SavedReport = data.report
+            setLibraryReports((prev) => [saved, ...prev.filter((r) => r.id !== saved.id)])
+            setActiveReportId(saved.id)
+            loadSavedSources(saved.projectId ?? null)
+            refreshProjects()
+          } else if (data.type === 'notice') {
+            notify(data.message, undefined, 'error')
+          } else if (data.type === 'warning') {
+            // Partial coverage: keep it on screen with the report, not only in a toast
+            setRunWarnings((prev) => (prev.includes(data.message) ? prev : [...prev, data.message]))
+            notify(data.message, undefined, 'error')
           } else if (data.type === 'error') {
-            notify(`Agent notice: ${data.message}`)
+            notify(`Agent notice: ${data.message}`, undefined, 'error')
           }
         } catch (e) {
           console.error('Error parsing SSE event', e)
@@ -740,61 +852,330 @@ export default function App() {
           setView('report')
           setReportTab('brief')
         } else {
-          notify('Search stream completed or server unavailable. Loaded evidence preview.')
-          setRunStep(5)
-          setView('report')
-          setReportTab('brief')
+          notify("The research stream was interrupted before a report was written. Nothing was saved; try again.", undefined, 'error')
+          setRunStep(0)
+          setView('home')
         }
       }
     } catch (err) {
       console.error('Failed to connect to /api/research', err)
-      notify('Backend connection error. Running illustrative mode.')
-      setView('report')
+      notify("Couldn't reach the NemoSearch server, so no research was run.", undefined, 'error')
+      setView('home')
     }
   }
 
-  const openReport = (report: SavedReport | string) => {
-    const title = typeof report === 'string' ? report : report.title
-    const saved = typeof report === 'object' ? report : libraryReports.find((r) => r.title === title)
+  const loadSavedSources = (projectId: string | null) => {
+    api
+      .listSources(projectId ?? 'unassigned')
+      .then((list) => setSavedSourceIds(Object.fromEntries(list.map((s) => [s.url, s.id]))))
+      .catch(() => setSavedSourceIds({}))
+  }
 
-    setSubmittedQuery(title)
+  const openReport = async (report: SavedReport | string) => {
+    const title = typeof report === 'string' ? report : report.title
+    let saved = typeof report === 'object' ? report : libraryReports.find((r) => r.title === title)
+    if (saved && saved.hasReport !== false && !saved.reportText) {
+      try {
+        saved = await api.getReport(saved.id)
+      } catch (e) {
+        notify(`Couldn't open “${title}”: ${(e as Error).message}`, undefined, 'error')
+        return
+      }
+    }
+
+    setSubmittedQuery(saved?.question || title)
+    setActiveReportId(saved?.id ?? null)
+    loadSavedSources(saved?.projectId ?? null)
     if (saved && saved.reportText) {
       setLiveReport(saved.reportText)
-      setLiveSources(saved.sourcesData || sampleSources)
+      setLiveSources(saved.sourcesData || [])
       setLiveReasoning(saved.reasoningTrace || '')
+      setRunCoverage(saved.coverage && 'complete' in saved.coverage ? saved.coverage : null)
+      setRunWarnings([])
       setIsLiveRun(true)
     } else {
       setIsLiveRun(false)
       setLiveSources(sampleSources)
+      setRunCoverage(null)
+      setRunWarnings([])
     }
     setReportTab('brief')
-    setFollowUpSent(false)
-    setFollowUpResponse('')
+    setThread((saved?.followups ?? []).map((turn) => ({ ...turn, status: 'done' as const })))
     setSidebarOpen(false)
     setView('report')
   }
 
-  const changeTeamModel = (step: TeamStep, model: string) => {
-    const next = { ...teamModels, [step]: model }
-    const allRecommended = teamSteps.every(({ key }) => next[key] === teamDefaults[key])
-    setCustomTeam(next)
-    setUseRecommended(allRecommended)
-    const name = teamSteps.find((s) => s.key === step)?.name
-    setTeamAnnouncement(
-      `${name} now uses ${modelLabel(model)}. ${allRecommended ? 'All steps use recommended models.' : 'Custom team active.'}`
+  const updateReport = (id: string, patch: Partial<SavedReport>) =>
+    setLibraryReports((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+
+  const focusReport = (id: string) =>
+    window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-report-id="${id}"] .report-open`)?.focus())
+
+  // Optimistic update on the server; restores the previous values and reports the error if it fails
+  const patchReport = (report: SavedReport, patch: { title?: string; archived?: boolean }) => {
+    updateReport(report.id, patch)
+    return api.updateReport(report.id, patch).catch((e: Error) => {
+      updateReport(report.id, { title: report.title, archived: report.archived })
+      notify(`Couldn't update “${report.title}”: ${e.message}`, undefined, 'error')
+      throw e
+    })
+  }
+
+  const finishRename = (report: SavedReport, value: string | null) => {
+    const title = value?.trim().replace(/\s+/g, ' ')
+    if (title && title !== report.title) patchReport(report, { title: title.slice(0, 80) }).catch(() => undefined)
+    setRenaming(null)
+    focusReport(report.id)
+  }
+
+  const duplicateReport = async (report: SavedReport) => {
+    try {
+      const copy = await api.duplicateReport(report.id)
+      setLibraryReports((prev) => [copy, ...prev])
+      notify(`Duplicated “${report.title}”.`)
+      refreshProjects()
+    } catch (e) {
+      notify(`Couldn't duplicate “${report.title}”: ${(e as Error).message}`, undefined, 'error')
+    }
+  }
+
+  const archiveReport = (report: SavedReport, archived: boolean) => {
+    patchReport(report, { archived })
+      .then(() =>
+        notify(archived ? `Archived “${report.title}”.` : `Restored “${report.title}”.`, {
+          label: 'Undo',
+          run: () => patchReport({ ...report, archived }, { archived: !archived }).catch(() => undefined),
+        })
+      )
+      .catch(() => undefined)
+  }
+
+  const deleteReport = async (report: SavedReport) => {
+    const index = libraryReports.findIndex((r) => r.id === report.id)
+    try {
+      await api.deleteReport(report.id)
+    } catch (e) {
+      notify(`Couldn't delete “${report.title}”: ${(e as Error).message}`, undefined, 'error')
+      return
+    }
+    setLibraryReports((prev) => prev.filter((r) => r.id !== report.id))
+    if (activeReportId === report.id) setActiveReportId(null)
+    refreshProjects()
+    notify(`Deleted “${report.title}”.`, {
+      label: 'Undo',
+      run: () =>
+        api
+          .restoreReport(report.id)
+          .then(() => {
+            setLibraryReports((prev) => [...prev.slice(0, index), report, ...prev.slice(index)])
+            refreshProjects()
+          })
+          .catch((e: Error) => notify(`Couldn't restore “${report.title}”: ${e.message}`, undefined, 'error')),
+    })
+  }
+
+  // ---------------- projects
+  const openProjectDialog = (dialog: { mode: 'create' | 'rename'; project?: Project; forRun?: boolean }) => {
+    dialogOpener.current = document.activeElement as HTMLElement | null
+    setProjectDialog(dialog)
+  }
+
+  const closeDialogs = () => {
+    setProjectDialog(null)
+    setDeletingProject(null)
+    window.requestAnimationFrame(() => dialogOpener.current?.focus())
+  }
+
+  const changeScope = (next: ResearchScope) => {
+    setScope(next)
+    // New research follows the project you are looking at
+    setRunProject(next !== 'all' && next !== 'unassigned' && !projects.find((p) => p.id === next)?.archived ? next : '')
+  }
+
+  const submitProjectDialog = async (name: string, description: string) => {
+    if (projectDialog?.mode === 'rename' && projectDialog.project) {
+      const updated = await api.updateProject(projectDialog.project.id, { name, description })
+      setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
+      notify(`Renamed project to “${updated.name}”.`)
+    } else {
+      const created = await api.createProject(name, description)
+      setProjects((prev) => [created, ...prev])
+      if (projectDialog?.forRun) setRunProject(created.id)
+      else changeScope(created.id)
+      notify(`Created project “${created.name}”.`)
+    }
+    closeDialogs()
+  }
+
+  const archiveProject = async (project: Project, archived: boolean) => {
+    try {
+      const updated = await api.updateProject(project.id, { archived })
+      setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
+      if (archived && runProject === project.id) setRunProject('')
+      notify(archived ? `Archived project “${project.name}”. Its research stays available.` : `Restored project “${project.name}”.`, {
+        label: 'Undo',
+        run: () => archiveProject(updated, !archived),
+      })
+    } catch (e) {
+      notify(`Couldn't update “${project.name}”: ${(e as Error).message}`, undefined, 'error')
+    }
+  }
+
+  const confirmDeleteProject = async (reports: 'unassign' | 'delete') => {
+    if (!deletingProject) return
+    const project = deletingProject
+    const result = await api.deleteProject(project.id, reports)
+    setProjects((prev) => prev.filter((p) => p.id !== project.id))
+    setLibraryReports((prev) =>
+      reports === 'delete'
+        ? prev.filter((r) => r.projectId !== project.id)
+        : prev.map((r) => (r.projectId === project.id ? { ...r, projectId: null } : r))
+    )
+    if (runProject === project.id) setRunProject('')
+    if (scope === project.id) setScope('all')
+    closeDialogs()
+    notify(
+      reports === 'delete'
+        ? `Deleted project “${project.name}” and ${result.deletedReports} report${result.deletedReports === 1 ? '' : 's'}.`
+        : `Deleted project “${project.name}”. ${result.movedReports} report${result.movedReports === 1 ? '' : 's'} moved to Unassigned.`
     )
   }
 
-  // Model overrides sent to the backend; empty when the recommended routing is on
-  const teamOverrides = (): Record<string, string> =>
-    useRecommended
+  const projectActions = (project: Project) => [
+    { label: 'Rename', icon: Pencil, onSelect: () => openProjectDialog({ mode: 'rename', project }) },
+    project.archived
+      ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveProject(project, false) }
+      : { label: 'Archive', icon: Archive, onSelect: () => archiveProject(project, true) },
+    {
+      label: 'Delete',
+      icon: Trash2,
+      separated: true,
+      onSelect: () => {
+        dialogOpener.current = document.activeElement as HTMLElement | null
+        setDeletingProject(project)
+      },
+    },
+  ]
+
+  // ---------------- saved sources and exports follow the open report's project
+  const activeReport = libraryReports.find((r) => r.id === activeReportId)
+  const activeProjectId = activeReport?.projectId ?? null
+  const projectName = (id: string | null | undefined) => (id ? projects.find((p) => p.id === id)?.name ?? 'project' : 'Unassigned')
+
+  const toggleSavedSource = async (source: Source) => {
+    const existing = savedSourceIds[source.url]
+    try {
+      if (existing) {
+        await api.deleteSource(existing)
+        setSavedSourceIds((prev) => {
+          const next = { ...prev }
+          delete next[source.url]
+          return next
+        })
+        notify(`Removed “${source.title}” from ${projectName(activeProjectId)}.`)
+      } else {
+        const saved = await api.saveSource(activeProjectId, activeReport ? activeReport.id : null, source)
+        setSavedSourceIds((prev) => ({ ...prev, [source.url]: saved.id }))
+        notify(`Saved “${source.title}” to ${projectName(activeProjectId)}.`)
+      }
+      refreshProjects()
+    } catch (e) {
+      notify(`Couldn't update saved sources: ${(e as Error).message}`, undefined, 'error')
+    }
+  }
+
+  const saveSourceButton = (source: Source) => {
+    const saved = Boolean(savedSourceIds[source.url])
+    return (
+      <button
+        type="button"
+        className={`save-source ${saved ? 'saved' : ''}`}
+        aria-pressed={saved}
+        onClick={() => toggleSavedSource(source)}
+      >
+        {saved ? <BookmarkCheck size={15} aria-hidden="true" /> : <Bookmark size={15} aria-hidden="true" />}
+        {saved ? `Saved to ${projectName(activeProjectId)}` : 'Save source'}
+      </button>
+    )
+  }
+
+  const recordExport = (kind: string, filename: string, content?: string) =>
+    api.recordExport(activeProjectId, activeReport ? activeReport.id : null, kind, filename, content).then(refreshProjects, () =>
+      notify(`The ${kind === 'pdf' ? 'PDF' : 'outline'} export wasn't recorded in your history.`, undefined, 'error')
+    )
+
+  const reportActions = (report: SavedReport, place: 'sidebar' | 'library') => [
+    { label: 'Rename', icon: Pencil, onSelect: () => setRenaming({ id: report.id, place }) },
+    { label: 'Duplicate', icon: CopyPlus, onSelect: () => duplicateReport(report) },
+    report.archived
+      ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
+      : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) },
+    { label: 'Delete', icon: Trash2, onSelect: () => deleteReport(report), separated: true },
+  ]
+
+  const renameInput = (report: SavedReport, className: string) => (
+    <input
+      className={className}
+      defaultValue={report.title}
+      aria-label={`Rename “${report.title}”`}
+      maxLength={80}
+      autoFocus
+      onFocus={(event) => event.currentTarget.select()}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') finishRename(report, event.currentTarget.value)
+        if (event.key === 'Escape') {
+          event.stopPropagation()
+          finishRename(report, null)
+        }
+      }}
+      onBlur={(event) => finishRename(report, event.currentTarget.value)}
+    />
+  )
+
+  const fillExample = (value: string) => {
+    setQuery(value)
+    searchRef.current?.focus()
+  }
+
+  const openRouting = () => {
+    routingOpener.current = document.activeElement as HTMLElement | null
+    setRoutingOpen(true)
+  }
+
+  const closeRouting = () => {
+    setRoutingOpen(false)
+    window.requestAnimationFrame(() => routingOpener.current?.focus())
+  }
+
+  const saveRouting = (routing: Routing, scope: RoutingScope) => {
+    if (scope === 'default') {
+      const stored = storeRouting(routing)
+      setSavedRouting(routing)
+      setNextRunRouting(null)
+      notify(
+        stored
+          ? `${presetInfo[routing.preset].label} routing saved as your default.`
+          : `${presetInfo[routing.preset].label} routing applied, but your browser blocked saving it. It will reset when you reload.`,
+        undefined,
+        stored ? 'info' : 'error'
+      )
+    } else {
+      setNextRunRouting(routing)
+      notify(`${presetInfo[routing.preset].label} routing will be used for your next run.`)
+    }
+    closeRouting()
+  }
+
+  // Model overrides sent to the backend; empty for the recommended Balanced routing
+  const routingParams = (models: TeamModels, preset: Routing['preset']): Record<string, string> =>
+    preset === 'balanced'
       ? {}
       : {
-          planner_model: teamModels.planner,
-          reader_model: teamModels.reader,
-          critic_model: teamModels.critic,
-          writer_model: teamModels.writer,
-          search_provider: teamModels.scout,
+          planner_model: models.planner,
+          reader_model: models.reader,
+          critic_model: models.critic,
+          writer_model: models.writer,
+          search_provider: models.scout,
         }
 
   const toggleSidebar = () => {
@@ -830,7 +1211,7 @@ export default function App() {
       const res = await fetch('/api/slides', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: submittedQuery, report: reportTextToUse, models: useRecommended ? {} : teamModels }),
+        body: JSON.stringify({ topic: submittedQuery, report: reportTextToUse, models: runModels ?? teamModels }),
       })
       const data = res.ok ? await res.json() : {}
       if (Array.isArray(data.slides) && data.slides.length > 0) {
@@ -864,10 +1245,12 @@ export default function App() {
     const url = URL.createObjectURL(new Blob([outline], { type: 'text/markdown' }))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `nemosearch-executive-outline.md`
+    const filename = `${(activeReport?.title || 'nemosearch').replace(/[^\w -]+/g, '').trim() || 'nemosearch'} - executive outline.md`
+    anchor.download = filename
     anchor.click()
     URL.revokeObjectURL(url)
     notify('Executive outline downloaded.')
+    recordExport('slides-outline', filename, outline)
   }
 
   const submitFollowUp = async (event: FormEvent) => {
@@ -875,9 +1258,13 @@ export default function App() {
     const cleanFollowUp = followUp.trim()
     if (!cleanFollowUp || followUpSending) return
 
+    // Earlier answered turns travel with the question so the analyst remembers the conversation
+    const history = thread.filter((t) => t.status === 'done').map(({ question, answer }) => ({ question, answer }))
+    const updateTurn = (patch: Partial<FollowUpTurn>) =>
+      setThread((prev) => prev.map((turn, i) => (i === prev.length - 1 ? { ...turn, ...patch } : turn)))
+    setThread((prev) => [...prev, { question: cleanFollowUp, answer: '', status: 'streaming', note: 'Reasoning over the brief and this thread…' }])
+    setFollowUp('')
     setFollowUpSending(true)
-    setFollowUpSent(true)
-    setFollowUpResponse('Reasoning over prior brief and evidence thread...')
 
     const sourcesObj: Record<number, BackendSource> = {}
     currentSources.forEach((s) => {
@@ -889,6 +1276,7 @@ export default function App() {
         ? liveReport
         : `# ${submittedQuery}\n\n` + currentSources.map((s) => `- ${s.title}: ${s.quote} [${s.id}]`).join('\n')
 
+    let accumulated = ''
     try {
       const response = await fetch('/api/followup', {
         method: 'POST',
@@ -899,20 +1287,20 @@ export default function App() {
           prior_report: priorReport,
           sources: sourcesObj,
           focus: focusMode,
-          models: useRecommended ? {} : teamModels,
-          search_provider: useRecommended ? undefined : teamModels.scout,
+          models: runModels ?? teamModels,
+          search_provider: (runModels ?? teamModels).scout,
+          history,
+          report_id: isLiveRun ? activeReportId : null,
         }),
       })
 
       if (!response.ok || !response.body) {
-        setFollowUpResponse('Unable to stream response from backend.')
-        setFollowUpSending(false)
+        updateTurn({ status: 'error', note: `The server couldn't answer (status ${response.status}). Try again.` })
         return
       }
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let accumulated = ''
       let buffer = ''
 
       while (true) {
@@ -928,14 +1316,23 @@ export default function App() {
               const data = JSON.parse(line.slice(6))
               if (data.type === 'followup_delta' && data.kind === 'text') {
                 accumulated += data.delta
-                setFollowUpResponse(accumulated)
+                updateTurn({ answer: accumulated })
               } else if (data.type === 'followup_status' && !accumulated) {
-                setFollowUpResponse(data.status)
+                updateTurn({ note: data.status })
               } else if (data.type === 'source' && isLiveRun) {
                 const newSource = toSource({ ...(data.source as BackendSource), relevance: undefined })
                 setLiveSources((prev) => (prev.some((s) => s.id === newSource.id) ? prev : [...prev, newSource]))
+              } else if (data.type === 'followup_saved' && activeReportId) {
+                // Keep the cached copy in step with the server so reopening the report shows the thread
+                setLibraryReports((prev) =>
+                  prev.map((r) =>
+                    r.id === activeReportId && r.reportText
+                      ? { ...r, followups: [...(r.followups ?? []), { question: cleanFollowUp, answer: accumulated }] }
+                      : r
+                  )
+                )
               } else if (data.type === 'error') {
-                setFollowUpResponse(`Agent notice: ${data.message}`)
+                notify(`Follow-up: ${data.message}`, undefined, 'error')
               }
             } catch {
               // Ignore non-json
@@ -943,23 +1340,159 @@ export default function App() {
           }
         }
       }
-      if (!accumulated) {
-        setFollowUpResponse((prev) => (prev.startsWith('Agent notice') ? prev : 'No answer was returned. Please try again.'))
-      }
+      updateTurn(accumulated ? { status: 'done', note: '' } : { status: 'error', note: 'No answer was returned. Try asking again.' })
     } catch {
-      setFollowUpResponse(
-        'The Nemotron reasoning agent reviewed your question against the verified evidence thread. (Backend connection paused).'
+      updateTurn(
+        accumulated
+          ? { status: 'done', note: 'The connection dropped, so this answer may be incomplete.' }
+          : { status: 'error', note: "Couldn't reach the NemoSearch server, so no answer was generated." }
       )
     } finally {
       setFollowUpSending(false)
     }
   }
 
-  const isSampleReport = !isLiveRun && submittedQuery === SAMPLE_QUERY
-  const currentSources = isLiveRun && liveSources.length > 0 ? liveSources : sampleSources
-  const filteredReports = libraryReports.filter((report) =>
-    report.title.toLowerCase().includes(libraryFilter.toLowerCase())
+  // Called while rendering the report, after currentSources is defined
+  const renderFollowUp = () => (
+    <form className="follow-up-box" onSubmit={submitFollowUp}>
+      <label htmlFor="follow-up">Continue this research thread</label>
+      {thread.length > 0 && (
+        <ol className="follow-up-thread" aria-label="Follow-up questions and answers">
+          {thread.map((turn, index) => (
+            <li className="follow-up-turn" key={index}>
+              <p className="follow-up-question">
+                <span className="section-label">You asked</span>
+                {turn.question}
+              </p>
+              <div className="follow-up-response">
+                <span className="section-label">
+                  {turn.status === 'streaming' ? (
+                    <LoaderCircle size={12} className="spin" aria-hidden="true" />
+                  ) : turn.status === 'error' ? (
+                    <AlertTriangle size={12} aria-hidden="true" />
+                  ) : (
+                    <Check size={12} aria-hidden="true" />
+                  )}{' '}
+                  Nemotron Analyst
+                </span>
+                {turn.answer && <RenderReportBody markdown={turn.answer} sources={currentSources} onOpenSource={setSelectedSource} />}
+                {turn.note && <p className={`follow-up-note ${turn.status === 'error' ? 'error' : ''}`}>{turn.note}</p>}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className="visually-hidden" role="status">
+        {followUpSending ? 'Answering your follow-up…' : thread.length && thread[thread.length - 1].status === 'done' ? 'Answer ready.' : ''}
+      </p>
+      <div className="follow-up-input">
+        <input
+          id="follow-up"
+          value={followUp}
+          onChange={(event) => setFollowUp(event.target.value)}
+          placeholder={thread.length ? 'Ask another follow-up…' : 'Ask a follow-up question…'}
+        />
+        <button type="submit" aria-label="Send follow-up" disabled={followUpSending || !followUp.trim()}>
+          <ArrowUpRight size={18} />
+        </button>
+      </div>
+    </form>
   )
+
+  const isSampleReport = !isLiveRun && submittedQuery === SAMPLE_QUERY
+
+  const scopeSelect = (id: string, className: string) => (
+    <label className={className} htmlFor={id}>
+      <span className="visually-hidden">Show research from</span>
+      <select id={id} value={scope} onChange={(event) => changeScope(event.target.value)}>
+        <option value="all">All research</option>
+        <option value="unassigned">Unassigned</option>
+        {activeProjects.length > 0 && (
+          <optgroup label="Projects">
+            {activeProjects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {archivedProjects.length > 0 && (
+          <optgroup label="Archived projects">
+            {archivedProjects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} (archived)
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      <ChevronDown size={13} aria-hidden="true" />
+    </label>
+  )
+
+  const toastView = (
+    <div className={`toast ${toastTone}`}>
+      {toastTone === 'error' ? <AlertTriangle size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
+      <span>{toast}</span>
+      {toastAction && (
+        <button
+          type="button"
+          className="toast-action"
+          onClick={() => {
+            toastAction.run()
+            setToast('')
+            setToastAction(null)
+          }}
+        >
+          {toastAction.label}
+        </button>
+      )}
+    </div>
+  )
+
+  const libraryRow = (report: SavedReport, index: number) => {
+    const isRenaming = renaming?.id === report.id && renaming.place === 'library'
+    return (
+      <div className={`library-row ${report.archived ? 'archived' : ''}`} key={report.id} data-report-id={report.id}>
+        <span className="library-title">
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          {isRenaming ? (
+            renameInput(report, 'library-rename')
+          ) : (
+            <button type="button" className="report-open" onClick={() => openReport(report)}>
+              <strong>{report.title}</strong>
+              {report.question && report.question !== report.title && <small>{report.question}</small>}
+            </button>
+          )}
+        </span>
+        <span>{report.mode}</span>
+        <span>{report.sources}</span>
+        <span>{reportTime(report, now)}</span>
+        <ItemMenu label={`Actions for “${report.title}”`} actions={reportActions(report, 'library')} />
+      </div>
+    )
+  }
+  // Only the illustrative sample brief shows sample sources; a real run shows exactly what it retrieved
+  const currentSources = isLiveRun ? liveSources : sampleSources
+  const coverageIncomplete = Boolean((runCoverage && !runCoverage.complete) || runWarnings.length)
+  const coverageForNotice: RunCoverage | null = runCoverage
+    ? runCoverage
+    : runWarnings.length
+      ? { academic: true, reason: '', web: [], scholarly: [], scholarly_status: 'partial', warnings: runWarnings, unverified_citations: [], complete: false }
+      : null
+  const inScope = (r: SavedReport) => scope === 'all' || (scope === 'unassigned' ? !r.projectId : r.projectId === scope)
+  const scopedReports = libraryReports.filter(inScope)
+  const visibleReports = scopedReports.filter((r) => !r.archived).sort(byRecency)
+  const archivedReports = scopedReports.filter((r) => r.archived).sort(byRecency)
+  const scopeProject = projects.find((p) => p.id === scope)
+  const activeProjects = projects.filter((p) => !p.archived)
+  const archivedProjects = projects.filter((p) => p.archived)
+  const recentReports = visibleReports.slice(0, 6)
+  const runNumber = runNumbers(visibleReports)
+  const matchesFilter = (report: SavedReport) =>
+    `${report.title} ${report.question ?? ''}`.toLowerCase().includes(libraryFilter.toLowerCase())
+  const filteredReports = visibleReports.filter(matchesFilter)
+  const filteredArchived = archivedReports.filter(matchesFilter)
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -1016,20 +1549,69 @@ export default function App() {
             <Activity size={17} /> <span className="nav-label">Agent activity</span>
           </button>
         </nav>
-        <div className="recent-block">
-          <div className="section-label">Recent research</div>
-          {libraryReports.slice(0, 5).map((report) => (
-            <button
-              type="button"
-              className="recent-item"
-              key={report.id || report.title}
-              onClick={() => openReport(report)}
-            >
-              {report.title}
-              <ChevronRight size={14} />
+        <nav className="recent-block" aria-labelledby="recent-title">
+          <div className="recent-header">
+            <div className="section-label" id="recent-title">Recent research</div>
+            <button type="button" className="recent-new-project" title="New project" aria-label="New project" onClick={() => openProjectDialog({ mode: 'create' })}>
+              <FolderPlus size={15} aria-hidden="true" />
             </button>
-          ))}
-        </div>
+          </div>
+          {scopeSelect('sidebar-scope', 'scope-select')}
+          <div className="recent-scroll">
+            {historyStatus === 'loading' ? (
+              <p className="recent-empty">Loading your research…</p>
+            ) : historyStatus === 'error' ? (
+              <div className="recent-empty" role="alert">
+                <p>Your research history isn't available right now. {historyError}</p>
+                <button type="button" className="recent-more" onClick={loadHistory}>
+                  Try again
+                </button>
+              </div>
+            ) : recentReports.length === 0 ? (
+              <p className="recent-empty">
+                {scope === 'all'
+                  ? 'Your research runs will appear here.'
+                  : scope === 'unassigned'
+                    ? 'No unassigned research.'
+                    : 'No research in this project yet. Research you start while it is selected is saved here.'}
+              </p>
+            ) : (
+              <ul className="recent-list">
+                {recentReports.map((report) => {
+                  const active = report.id === activeReportId && view === 'report'
+                  const isRenaming = renaming?.id === report.id && renaming.place === 'sidebar'
+                  return (
+                    <li className={`recent-item ${active ? 'active' : ''}`} key={report.id} data-report-id={report.id}>
+                      {isRenaming ? (
+                        renameInput(report, 'recent-rename')
+                      ) : (
+                        <button
+                          type="button"
+                          className="report-open recent-open"
+                          aria-current={active ? 'page' : undefined}
+                          title={report.question && report.question !== report.title ? report.question : undefined}
+                          onClick={() => openReport(report)}
+                        >
+                          <span className="recent-title">{report.title}</span>
+                          <span className="recent-meta">
+                            {reportTime(report, now)} · {report.sources} sources
+                            {runNumber.has(report.id) && ` · Run ${runNumber.get(report.id)}`}
+                          </span>
+                        </button>
+                      )}
+                      {!isRenaming && <ItemMenu label={`Actions for “${report.title}”`} actions={reportActions(report, 'sidebar')} />}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {visibleReports.length > recentReports.length && (
+              <button type="button" className="recent-more" onClick={() => navigate('library')}>
+                View all {visibleReports.length} in Library
+              </button>
+            )}
+          </div>
+        </nav>
         <div className="sidebar-profile">
           <span className="workspace-avatar">NS</span>
           <span className="nav-label">
@@ -1094,7 +1676,15 @@ export default function App() {
                     <div className="attachment-chip">
                       <FileText size={14} />
                       <span>{attachment}</span>
-                      <button type="button" onClick={() => setAttachment('')} aria-label="Remove attachment">
+                      <span className="attachment-dest">{runProject ? `→ ${projectName(runProject)}` : 'not kept without a project'}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAttachment('')
+                          setAttachmentFile(null)
+                        }}
+                        aria-label="Remove attachment"
+                      >
                         <X size={13} />
                       </button>
                     </div>
@@ -1105,7 +1695,11 @@ export default function App() {
                         ref={fileRef}
                         type="file"
                         className="visually-hidden"
-                        onChange={(event) => setAttachment(event.target.files?.[0]?.name || '')}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] ?? null
+                          setAttachmentFile(file)
+                          setAttachment(file?.name || '')
+                        }}
                       />
                       <IconButton label="Attach a source file" onClick={() => fileRef.current?.click()}>
                         <Plus size={18} />
@@ -1122,113 +1716,53 @@ export default function App() {
                         </span>
                         Deep research
                       </button>
+                      <label className={`project-chip ${runProject ? 'assigned' : ''}`}>
+                        <FolderOpen size={15} aria-hidden="true" />
+                        <span className="visually-hidden">Save this research to</span>
+                        <select
+                          value={runProject}
+                          onChange={(event) =>
+                            event.target.value === '__new'
+                              ? openProjectDialog({ mode: 'create', forRun: true })
+                              : setRunProject(event.target.value)
+                          }
+                        >
+                          <option value="">Unassigned</option>
+                          {projects
+                            .filter((p) => !p.archived)
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}
+                              </option>
+                            ))}
+                          <option value="__new">New project…</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className={`routing-chip ${activeRouting.preset === 'balanced' && !nextRunRouting ? '' : 'changed'}`}
+                        aria-haspopup="dialog"
+                        aria-label={`Research routing: ${routingLabel}. Customize`}
+                        onClick={openRouting}
+                      >
+                        <SlidersHorizontal size={15} aria-hidden="true" />
+                        <span>{routingLabel}</span>
+                      </button>
                     </div>
                     <button type="submit" className="research-button">
                       Research <ArrowUpRight size={17} />
                     </button>
                   </div>
                 </form>
+                <div className="home-examples" aria-label="Example questions">
+                  <span>Try</span>
+                  {examplePrompts.map((example) => (
+                    <button type="button" key={example.label} title={example.query} onClick={() => fillExample(example.query)}>
+                      {example.label}
+                    </button>
+                  ))}
+                </div>
               </section>
-
-              <aside
-                className={`team-panel ${teamOpen ? 'open' : ''}`}
-                aria-labelledby="team-title"
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape' && teamOpen) {
-                    event.stopPropagation()
-                    setTeamOpen(false)
-                    teamToggleRef.current?.focus()
-                  }
-                }}
-              >
-                <button
-                  ref={teamToggleRef}
-                  type="button"
-                  className="team-toggle"
-                  aria-expanded={teamOpen}
-                  aria-controls="team-steps"
-                  onClick={() => setTeamOpen((open) => !open)}
-                >
-                  <span className="team-toggle-title">
-                    <span className="section-label" id="team-title">Your research team</span>
-                    <span className={`team-status ${useRecommended ? '' : 'custom'}`}>
-                      <span aria-hidden="true" />
-                      {useRecommended ? 'Recommended models' : 'Custom models'}
-                    </span>
-                  </span>
-                  <span className="team-toggle-hint" aria-hidden="true">
-                    {teamOpen ? 'Done' : 'Edit'}
-                    <ChevronDown size={14} className="team-chevron" />
-                  </span>
-                </button>
-                <p className="team-tagline">
-                  Specialists at every step.
-                  <br />
-                  One shared evidence thread.
-                </p>
-
-                <ol className="team-steps" id="team-steps">
-                  {teamSteps.map((step, index) => {
-                    const Icon = stepIcons[index]
-                    const isScout = step.key === 'scout'
-                    const current = teamModels[step.key]
-                    const recommended = teamDefaults[step.key]
-                    const edited = current !== recommended
-                    const options = isScout ? providerOptions : modelOptions
-                    const choices = [...new Set([current, ...options])].filter((m) => m !== recommended)
-                    const nemotron = choices.filter((m) => /nemotron/i.test(m))
-                    const others = choices.filter((m) => !/nemotron/i.test(m))
-                    const option = (m: string) => (
-                      <option key={m} value={m} title={m}>
-                        {modelLabel(m)}
-                      </option>
-                    )
-                    return (
-                      <li className={`team-step ${edited ? 'edited' : ''}`} key={step.key}>
-                        <span className="team-step-icon" aria-hidden="true">
-                          <Icon size={17} />
-                        </span>
-                        <div className="team-step-body">
-                          <label className="team-step-name" htmlFor={`team-model-${step.key}`}>
-                            {step.name}
-                            {step.key === 'reader' && <span> ×4</span>}
-                          </label>
-                          <div className={`team-reveal ${teamOpen ? '' : 'shown'}`} aria-hidden={teamOpen}>
-                            <span className="team-step-model">
-                              {modelLabel(current)}
-                              {edited && <em> · custom</em>}
-                            </span>
-                          </div>
-                          <div className={`team-reveal ${teamOpen ? 'shown' : ''}`} inert={!teamOpen}>
-                            <div className="team-select">
-                              <select
-                                id={`team-model-${step.key}`}
-                                value={current}
-                                onChange={(event) => changeTeamModel(step.key, event.target.value)}
-                              >
-                                <optgroup label="Recommended">{option(recommended)}</optgroup>
-                                {isScout ? (
-                                  choices.length > 0 && <optgroup label="Other search">{choices.map(option)}</optgroup>
-                                ) : (
-                                  <>
-                                    {nemotron.length > 0 && <optgroup label="NVIDIA Nemotron">{nemotron.map(option)}</optgroup>}
-                                    {others.length > 0 && <optgroup label="Other models">{others.map(option)}</optgroup>}
-                                  </>
-                                )}
-                              </select>
-                              <ChevronDown size={13} aria-hidden="true" />
-                            </div>
-                          </div>
-                        </div>
-                      </li>
-                    )
-                  })}
-                </ol>
-
-                <span className="visually-hidden" aria-live="polite">
-                  {teamAnnouncement}
-                </span>
-              </aside>
             </div>
           )}
 
@@ -1303,7 +1837,7 @@ export default function App() {
                     liveSources.map((source, index) => (
                       <div className="evidence-item" key={source.id || index}>
                         <div>
-                          <span>{source.domain}</span>
+                          <SourceKind source={source} />
                           <span>0{index + 1}</span>
                         </div>
                         <strong>{source.title}</strong>
@@ -1323,7 +1857,11 @@ export default function App() {
                   <Plus size={16} /> New research
                 </button>
                 <span className="sample-notice">
-                  {isSampleReport ? 'Illustrative report · Preview data' : 'Verified Evidence · Live Briefing'}
+                  {isSampleReport
+                    ? 'Illustrative report · Preview data'
+                    : coverageIncomplete
+                      ? 'Live briefing · Partial coverage'
+                      : 'Verified Evidence · Live Briefing'}
                 </span>
               </div>
               <div className="report-title-block">
@@ -1332,15 +1870,28 @@ export default function App() {
                 </div>
                 <h1>{submittedQuery}</h1>
                 <div className="report-meta">
-                  <span>
-                    <Check size={14} /> Research complete
-                  </span>
+                  {coverageIncomplete ? (
+                    <span className="meta-warning">
+                      <AlertTriangle size={14} aria-hidden="true" /> Completed with partial coverage
+                    </span>
+                  ) : (
+                    <span>
+                      <Check size={14} /> Research complete
+                    </span>
+                  )}
                   <span>{currentSources.length} sources reviewed</span>
+                  {currentSources.some(isPaper) && <span>{currentSources.filter(isPaper).length} scholarly papers</span>}
                   <span>5 agent stages</span>
                   {liveStats.elapsed && <span>Completed in {liveStats.elapsed}s</span>}
                 </div>
                 <div className="report-actions">
-                  <button type="button" onClick={() => window.print()}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.print()
+                      recordExport('pdf', `${activeReport?.title || submittedQuery}.pdf`)
+                    }}
+                  >
                     <FileText size={16} /> Export PDF
                   </button>
                   <button type="button" onClick={openSlides}>
@@ -1351,6 +1902,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              {!isSampleReport && <CoverageNotice coverage={coverageForNotice} />}
               <div className="report-tabs" role="tablist" aria-label="Report sections">
                 {(['brief', 'sources', 'reasoning'] as const).map((tab) => (
                   <button
@@ -1379,28 +1931,11 @@ export default function App() {
                         sources={currentSources}
                         onOpenSource={setSelectedSource}
                       />
-                      <form className="follow-up-box" onSubmit={submitFollowUp}>
-                        <label htmlFor="follow-up">Continue this research thread</label>
-                        {followUpSent && (
-                          <div className="follow-up-response">
-                            <span className="section-label">
-                              {followUpSending ? <LoaderCircle size={12} className="spin" /> : <Check size={12} />} Nemotron Analyst
-                            </span>
-                            <RenderReportBody markdown={followUpResponse} sources={currentSources} onOpenSource={setSelectedSource} />
-                          </div>
-                        )}
-                        <div>
-                          <input
-                            id="follow-up"
-                            value={followUp}
-                            onChange={(event) => setFollowUp(event.target.value)}
-                            placeholder="Ask a follow-up question…"
-                          />
-                          <button type="submit" aria-label="Send follow-up" disabled={followUpSending}>
-                            <ArrowUpRight size={18} />
-                          </button>
-                        </div>
-                      </form>
+                      {renderFollowUp()}
+                    </div>
+                  ) : isLiveRun ? (
+                    <div className="report-empty" role="status">
+                      <p>No report was written for this run, so there is nothing to show here.</p>
                     </div>
                   ) : (
                     <article className="report-article">
@@ -1469,28 +2004,7 @@ export default function App() {
                           Otherwise, a smaller dense model with an efficient runtime may be the simpler operational win.
                         </p>
                       </div>
-                      <form className="follow-up-box" onSubmit={submitFollowUp}>
-                        <label htmlFor="follow-up">Continue this research thread</label>
-                        {followUpSent && (
-                          <div className="follow-up-response">
-                            <span className="section-label">
-                              {followUpSending ? <LoaderCircle size={12} className="spin" /> : <Check size={12} />} Nemotron Analyst
-                            </span>
-                            <RenderReportBody markdown={followUpResponse} sources={currentSources} onOpenSource={setSelectedSource} />
-                          </div>
-                        )}
-                        <div>
-                          <input
-                            id="follow-up"
-                            value={followUp}
-                            onChange={(event) => setFollowUp(event.target.value)}
-                            placeholder="Ask a follow-up question…"
-                          />
-                          <button type="submit" aria-label="Send follow-up" disabled={followUpSending}>
-                            <ArrowUpRight size={18} />
-                          </button>
-                        </div>
-                      </form>
+                      {renderFollowUp()}
                     </article>
                   )}
                   <aside className="report-sources-rail">
@@ -1509,7 +2023,7 @@ export default function App() {
                         <span>
                           <strong>{source.title}</strong>
                           <small>
-                            {source.domain} · {source.relevance}% match
+                            {isPaper(source) ? `Paper · ${sourceOrigin(source)}` : source.domain} · {source.relevance}% match
                           </small>
                         </span>
                       </button>
@@ -1524,22 +2038,28 @@ export default function App() {
                   <div className="sources-page-intro">
                     <h2>Evidence you can inspect.</h2>
                     <p>Every extracted claim stays connected to its original source and verbatim context.</p>
+                    {!isSampleReport && <CoverageLog coverage={runCoverage} />}
                   </div>
+                  {isLiveRun && currentSources.length === 0 && <p className="workspace-empty">This run retrieved no sources.</p>}
                   {currentSources.map((source) => (
                     <div className="source-detail-row" key={source.id}>
                       <span className="source-detail-id">0{source.id}</span>
                       <div>
                         <div className="source-detail-meta">
-                          <span>{source.domain}</span>
+                          <SourceKind source={source} />
                           <span>{source.relevance}% relevance</span>
                         </div>
                         <h3>{source.title}</h3>
-                        <p>{source.authors || source.domain}</p>
-                        <blockquote>“{source.quote || source.snippet || source.summary}”</blockquote>
+                        {isPaper(source) ? <SourceProvenance source={source} /> : <p>{source.authors || source.domain}</p>}
+                        {source.quote || source.snippet || (source.summary && source.access !== 'metadata') ? (
+                          <blockquote>“{source.quote || source.snippet || source.summary}”</blockquote>
+                        ) : null}
+                        {!isPaper(source) && <SourceProvenance source={source} />}
                         <div className="source-detail-actions">
                           <button type="button" onClick={() => setSelectedSource(source)}>
                             <ScanSearch size={15} /> Inspect extraction
                           </button>
+                          {saveSourceButton(source)}
                           <a href={source.url} target="_blank" rel="noreferrer">
                             Open original <ExternalLink size={14} />
                           </a>
@@ -1616,17 +2136,43 @@ export default function App() {
             <section className="library-view">
               <div className="page-heading">
                 <div>
-                  <div className="section-label">Your research archive</div>
-                  <h1>
-                    Pick up where
-                    <br />
-                    you left off.
-                  </h1>
+                  <div className="section-label">
+                    {scopeProject ? (scopeProject.archived ? 'Archived project' : 'Project') : 'Your research archive'}
+                  </div>
+                  {scopeProject ? (
+                    <>
+                      <h1 className="project-title">{scopeProject.name}</h1>
+                      {scopeProject.description && <p className="project-description">{scopeProject.description}</p>}
+                    </>
+                  ) : scope === 'unassigned' ? (
+                    <h1>Unassigned research</h1>
+                  ) : (
+                    <h1>
+                      Pick up where
+                      <br />
+                      you left off.
+                    </h1>
+                  )}
                 </div>
-                <button type="button" className="primary-button" onClick={newResearch}>
-                  <Plus size={16} /> New research
-                </button>
+                <div className="page-heading-actions">
+                  {scopeProject && <ItemMenu label={`Actions for project “${scopeProject.name}”`} actions={projectActions(scopeProject)} />}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => {
+                      newResearch()
+                      if (scopeProject && !scopeProject.archived) setRunProject(scopeProject.id)
+                    }}
+                  >
+                    <Plus size={16} /> {scopeProject && !scopeProject.archived ? 'New research in project' : 'New research'}
+                  </button>
+                </div>
               </div>
+              <p className="library-storage">
+                Saved on this NemoSearch server, so your research, sources and files are here after reloads and on later visits.
+              </p>
+              <div className="library-toolbar">
+              {scopeSelect('library-scope', 'scope-select library-scope')}
               <div className="library-search">
                 <Search size={18} />
                 <input
@@ -1641,6 +2187,7 @@ export default function App() {
                   </button>
                 )}
               </div>
+              </div>
               <div className="library-list">
                 <div className="library-list-head">
                   <span>Research</span>
@@ -1649,25 +2196,33 @@ export default function App() {
                   <span>Updated</span>
                   <span />
                 </div>
-                {filteredReports.map((report, index) => (
-                  <button
-                    type="button"
-                    className="library-row"
-                    key={report.id || report.title}
-                    onClick={() => openReport(report)}
-                  >
-                    <span className="library-title">
-                      <span>0{index + 1}</span>
-                      <strong>{report.title}</strong>
-                    </span>
-                    <span>{report.mode}</span>
-                    <span>{report.sources}</span>
-                    <span>{report.time}</span>
-                    <ArrowUpRight size={17} />
-                  </button>
-                ))}
+                {filteredReports.map((report, index) => libraryRow(report, index))}
                 {filteredReports.length === 0 && (
-                  <div className="library-empty">No research matches “{libraryFilter}”.</div>
+                  <div className="library-empty">
+                    {libraryFilter ? `No research matches “${libraryFilter}”.` : 'No research yet. Start a run to build your library.'}
+                  </div>
+                )}
+                {archivedReports.length > 0 && (
+                  <div className="library-archived">
+                    <button
+                      type="button"
+                      className="library-archived-toggle"
+                      aria-expanded={showArchived}
+                      aria-controls="library-archived-list"
+                      onClick={() => setShowArchived(!showArchived)}
+                    >
+                      <Archive size={15} aria-hidden="true" /> Archived · {archivedReports.length}
+                      <ChevronDown size={14} aria-hidden="true" className={showArchived ? 'flipped' : ''} />
+                    </button>
+                    {showArchived && (
+                      <div id="library-archived-list">
+                        {filteredArchived.map((report, index) => libraryRow(report, index))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {scope !== 'all' && (
+                  <ProjectWorkspace key={scope} scope={scope} refreshKey={workspaceKey} notify={notify} onChanged={refreshProjects} />
                 )}
               </div>
             </section>
@@ -1689,7 +2244,8 @@ export default function App() {
                 </span>
               </div>
               <p className="activity-lead">
-                NemoSearch routes each research stage across three Nemotron 3 tiers, with Tavily supplying fresh web evidence.
+                NemoSearch routes each research stage across three Nemotron 3 tiers. Tavily supplies fresh web evidence, and
+                academic questions also search OpenAlex for scholarly papers.
               </p>
               <div className="activity-metrics">
                 <div>
@@ -1708,28 +2264,33 @@ export default function App() {
                   <small>Plan → search → read → critique → write</small>
                 </div>
               </div>
-              <div className="routing-ledger">
+              <section className="routing-ledger" aria-labelledby="ledger-title">
                 <div className="run-list-heading">
-                  <span className="section-label">Routing ledger</span>
-                  <span>Live architecture</span>
+                  <span className="section-label" id="ledger-title">Routing ledger</span>
+                  <span className="ledger-summary">
+                    {routingLabel} routing
+                    <button type="button" className="ledger-action" aria-haspopup="dialog" onClick={openRouting}>
+                      Customize routing
+                    </button>
+                  </span>
                 </div>
                 {defaultResearchSteps.map((step, index) => {
                   const Icon = stepIcons[index]
                   return (
                     <div className="ledger-row" key={step.name}>
-                      <span className="ledger-icon">
+                      <span className="ledger-icon" aria-hidden="true">
                         <Icon size={19} />
                       </span>
                       <strong>{step.name}</strong>
-                      <span>{modelLabel(teamModels[teamSteps[index].key])}</span>
+                      <span className="ledger-model-label">{modelLabel(teamModels[teamSteps[index].key])}</span>
                       <p>{step.detail}</p>
                       <span className="ledger-status">
-                        <Check size={14} /> Ready
+                        <Check size={14} aria-hidden="true" /> Ready
                       </span>
                     </div>
                   )
                 })}
-              </div>
+              </section>
               <div className="activity-footer">
                 <div>
                   <Network size={22} />
@@ -1763,17 +2324,24 @@ export default function App() {
               </IconButton>
             </div>
             <div className="source-modal-domain">
-              <span>{selectedSource.domain}</span>
+              <SourceKind source={selectedSource} />
               <span>{selectedSource.relevance}% relevance</span>
             </div>
             <h2 id="source-modal-title">{selectedSource.title}</h2>
-            <p className="source-modal-authors">{selectedSource.authors || selectedSource.domain}</p>
-            <div className="extracted-quote">
-              <span className="section-label">
-                <Check size={13} /> Verbatim extraction
-              </span>
-              <blockquote>“{selectedSource.quote || selectedSource.snippet || selectedSource.summary}”</blockquote>
-            </div>
+            {isPaper(selectedSource) ? (
+              <SourceProvenance source={selectedSource} />
+            ) : (
+              <p className="source-modal-authors">{selectedSource.authors || selectedSource.domain}</p>
+            )}
+            {selectedSource.access === 'metadata' ? null : (
+              <div className="extracted-quote">
+                <span className="section-label">
+                  <Check size={13} /> {isPaper(selectedSource) ? 'Verbatim from the abstract' : 'Verbatim extraction'}
+                </span>
+                <blockquote>“{selectedSource.quote || selectedSource.snippet || selectedSource.summary}”</blockquote>
+              </div>
+            )}
+            {!isPaper(selectedSource) && <SourceProvenance source={selectedSource} />}
             <div className="modal-actions">
               <button
                 type="button"
@@ -1784,6 +2352,7 @@ export default function App() {
               >
                 <Copy size={16} /> Copy quote
               </button>
+              {saveSourceButton(selectedSource)}
               <a href={selectedSource.url} target="_blank" rel="noreferrer">
                 Open original source <ExternalLink size={15} />
               </a>
@@ -1837,12 +2406,36 @@ export default function App() {
         </div>
       )}
 
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={16} />
-          {toast}
-        </div>
+      {routingOpen && (
+        <RoutingEditor
+          routing={activeRouting}
+          presets={presets}
+          modelOptions={modelOptions}
+          providerOptions={providerOptions}
+          catalogStatus={catalogStatus}
+          onCancel={closeRouting}
+          onSave={saveRouting}
+        />
       )}
+
+      {projectDialog && (
+        <ProjectDialog
+          mode={projectDialog.mode}
+          initialName={projectDialog.project?.name}
+          initialDescription={projectDialog.project?.description}
+          onCancel={closeDialogs}
+          onSubmit={submitProjectDialog}
+        />
+      )}
+      {deletingProject && <DeleteProjectDialog project={deletingProject} onCancel={closeDialogs} onConfirm={confirmDeleteProject} />}
+
+      {/* Live regions stay mounted so screen readers reliably announce what appears in them */}
+      <div className="toast-region" role="status" aria-live="polite" aria-atomic="true">
+        {toast && toastTone === 'info' && toastView}
+      </div>
+      <div className="toast-region" role="alert" aria-atomic="true">
+        {toast && toastTone === 'error' && toastView}
+      </div>
     </div>
   )
 }
