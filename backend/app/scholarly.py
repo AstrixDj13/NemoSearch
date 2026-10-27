@@ -15,6 +15,9 @@ from .connectors import CONNECTORS, ConnectorError, QueryRecord, ScholarlyWork, 
 
 log = logging.getLogger("nemosearch.scholarly")
 
+# Open-access papers read in full per research round; each PDF costs a download plus a long reader prompt
+FULLTEXT_PER_ROUND = 6
+
 # Phrases that signal the user wants the research literature, not general web pages
 _ACADEMIC = [
     r"\bpapers?\b", r"\bpeer[- ]reviewed\b", r"\bliterature\b", r"\bsystematic review\b", r"\bmeta[- ]analys[ie]s\b",
@@ -50,13 +53,14 @@ def keyword_query(query: str, n: int = 6) -> str:
 
 
 def work_to_source(work: ScholarlyWork) -> dict:
-    """A pipeline source. `content` is the abstract only; papers without one are kept but marked metadata-only."""
+    """A pipeline source. `content` starts as the abstract (papers without one are marked metadata-only) and is
+    replaced by the paper's text if `Scholarly.read_fulltext` retrieves an open-access copy."""
     return {
         "kind": "paper",
         "title": work.title,
         "url": work.url,
         "content": work.abstract,
-        "domain": work.venue or "OpenAlex",
+        "domain": work.venue or CONNECTORS[work.connector].label,
         "provider": work.connector,
         "focus": "academic",
         "query": work.query,
@@ -74,13 +78,39 @@ def work_to_source(work: ScholarlyWork) -> dict:
             "status": work.status,
             "is_open_access": work.is_open_access,
             "oa_url": work.oa_url,
+            "pdf_url": work.pdf_url,
         },
     }
 
 
+def _title_key(title: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", title.lower())
+
+
+def dedupe(works) -> list[ScholarlyWork]:
+    """One entry per work across connectors (OpenAlex also indexes arXiv), matched by DOI or exact title.
+
+    The first copy wins its position; a later copy replaces it only when it has an abstract and the first doesn't.
+    """
+    kept: list[ScholarlyWork] = []
+    index: dict[str, int] = {}
+    for w in works:
+        keys = [k for k in (w.doi.lower() if w.doi else "", _title_key(w.title)) if k]
+        hit = next((index[k] for k in keys if k in index), None)
+        if hit is None:
+            index.update({k: len(kept) for k in keys})
+            kept.append(w)
+        else:
+            if w.abstract and not kept[hit].abstract:
+                kept[hit] = w
+            index.update({k: hit for k in keys})
+    return kept
+
+
 class Scholarly:
     def __init__(self, names: Optional[list[str]] = None) -> None:
-        self.connectors = [CONNECTORS[n]() for n in (names or ["openalex"])]
+        self.connectors = [CONNECTORS[n]() for n in (names or ["openalex", "arxiv"])]
+        self.by_name = {c.name: c for c in self.connectors}
 
     def labels(self) -> list[str]:
         return [c.label for c in self.connectors]
@@ -91,12 +121,38 @@ class Scholarly:
         # Planner queries often reduce to the same keywords; send each distinct query once
         distinct = list(dict.fromkeys(keyword_query(q) for q in queries))
         for connector in self.connectors:
-            for q in distinct:
+            # Slow, strictly rate-limited providers (arXiv) take only the first few queries
+            for q in distinct[: getattr(connector, "max_queries", None)]:
                 record = QueryRecord(connector=connector.name, query=q, sent_at=utc_now())
                 records.append(record)
                 jobs.append(self._one(connector, q, k, record))
         batches = await asyncio.gather(*jobs)
-        return [work_to_source(w) for batch in batches for w in batch], records
+        return [work_to_source(w) for w in dedupe(w for batch in batches for w in batch)], records
+
+    async def read_fulltext(self, src: dict) -> None:
+        """Swaps a paper's abstract for its open-access full text, or records in `src["fulltext"]` why it couldn't."""
+        paper = src.get("paper") or {}
+        pdf_url = paper.get("pdf_url") or ""
+        connector = self.by_name.get(paper.get("connector", ""))
+        if not pdf_url or not connector:
+            src["fulltext"] = {"status": "unavailable", "error": "no open-access copy is listed"}
+            return
+        try:
+            text = await connector.fulltext(pdf_url)
+        except ConnectorError as e:
+            src["fulltext"] = {"status": "failed", "url": pdf_url, "error": str(e)}
+            log.warning("full text for %r failed: %s", src.get("title"), e)
+            return
+        except Exception as e:  # noqa: BLE001 - a bug here must leave the paper abstract-only, not break the run
+            log.exception("full text for %r crashed", src.get("title"))
+            src["fulltext"] = {"status": "failed", "url": pdf_url, "error": f"unexpected error: {type(e).__name__}"}
+            return
+        src["content"] = text.text
+        src["access"] = "fulltext"
+        src["fulltext"] = {
+            "status": "ok", "url": text.url, "retrieved_at": text.retrieved_at, "pages": text.pages,
+            "chars": text.chars, "truncated": text.truncated,
+        }
 
     @staticmethod
     async def _one(connector, query: str, k: int, record: QueryRecord) -> list[ScholarlyWork]:

@@ -15,7 +15,7 @@ from typing import AsyncIterator
 from .connectors import utc_now
 from .llm import LLM, RunStats, extract_json
 from .scholar import generate_bibtex, sanitize_bib_key
-from .scholarly import Scholarly, academic_intent, coverage_summary
+from .scholarly import FULLTEXT_PER_ROUND, Scholarly, academic_intent, coverage_summary
 from .search import Search
 
 CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
@@ -78,13 +78,18 @@ async def read(llm: LLM, stats: RunStats, question: str, src: dict, model: str |
         '  "facts": ["<fact 1>", "<fact 2>"]\n'
         '}'
     )
-    kind = (
-        "SOURCE TYPE: scholarly paper; only its abstract was retrieved (metadata record, full text NOT read)\n"
-        if src.get("kind") == "paper" else ""
-    )
+    full = src.get("access") == "fulltext"
+    if src.get("kind") != "paper":
+        kind, heading, limit = "", "DOCUMENT", 5500
+    elif full:
+        kind, heading, limit = "SOURCE TYPE: scholarly paper; full text extracted from its open-access PDF\n", "FULL TEXT", 40_000
+    else:
+        kind, heading, limit = (
+            "SOURCE TYPE: scholarly paper; only its abstract was retrieved (full text NOT read)\n", "ABSTRACT", 5500
+        )
     user = (
         f"QUESTION: {question}\n\n{kind}SOURCE TITLE: {src['title']}\nURL: {src['url']}\n\n"
-        f"{'ABSTRACT' if kind else 'DOCUMENT'}:\n{src['content'][:5500]}"
+        f"{heading}:\n{src['content'][:limit]}"
     )
 
     def mock() -> str:
@@ -152,7 +157,7 @@ def _evidence_block(sources: dict[int, dict], notes: list[dict]) -> str:
         if s.get("kind") == "paper":
             meta = s["paper"]
             origin = ", ".join(str(x) for x in (meta["venue"], meta["year"]) if x) or "venue unknown"
-            label = f"scholarly paper, {origin}; abstract only"
+            label = f"scholarly paper, {origin}; " + ("full text read" if s.get("access") == "fulltext" else "abstract only")
         else:
             label = s["domain"]
         parts.append(f"[{n['id']}] {s['title']} ({label})\n  Summary: {n['summary']}\n{quote_line}\n{facts}")
@@ -284,10 +289,21 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         # 3. READ (parallel) ---------------------------------------------
         if not new:
             return
-        yield stage("reader", "running", f"Reading {len(new)} sources in parallel", "reader")
+        # Open-access papers are read in full, up to a per-round limit; the rest stay abstract-only with the reason
+        with_pdf = [s for s in new if s.get("kind") == "paper" and (s.get("paper") or {}).get("pdf_url")]
+        full_ids = {s["id"] for s in with_pdf[:FULLTEXT_PER_ROUND]}
+        for s in with_pdf[FULLTEXT_PER_ROUND:]:
+            s["fulltext"] = {"status": "skipped", "url": s["paper"]["pdf_url"],
+                             "error": f"only {FULLTEXT_PER_ROUND} papers per round are read in full"}
+        yield stage("reader", "running", f"Reading {len(new)} sources in parallel"
+                    + (f", {len(full_ids)} papers in full text" if full_ids else ""), "reader")
         sem = asyncio.Semaphore(5)
 
         async def guarded(src):
+            if src["id"] in full_ids:
+                await scholarly.read_fulltext(src)
+            elif src.get("kind") == "paper" and "fulltext" not in src:
+                src["fulltext"] = {"status": "unavailable", "error": "no open-access copy is listed"}
             if src.get("access") == "metadata":
                 return {
                     "id": src["id"], "relevance": 0, "quote": "", "facts": [], "metadata_only": True,
@@ -347,9 +363,9 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         "- '## Bottom Line'\n"
         "MANDATORY: Cite every single factual assertion with bracketed source numbers like [2] or [1][4]. "
         "Never hallucinate facts or citation numbers. Aim for high density and analytical depth (~600-900 words).\n"
-        "Sources marked 'scholarly paper ... abstract only' were retrieved as metadata records: report what their "
-        "abstracts state, never imply the full paper was read, and never add papers, authors or DOIs that are not "
-        "in the evidence."
+        "Sources marked 'scholarly paper ... full text read' were read in full from an open-access copy. Sources "
+        "marked 'scholarly paper ... abstract only' were not: report what their abstracts state and never imply "
+        "the full paper was read. Never add papers, authors or DOIs that are not in the evidence."
         + ("\nNOTE: scholarly search failed for some queries, so state in Limitations that coverage of the "
            "academic literature is incomplete." if coverage_summary(scholarly_log, connector_labels)["failed"] else "")
     )
@@ -406,7 +422,7 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         "sources": {
             s["id"]: {
                 "id": s["id"], "title": s["title"], "url": s["url"], "domain": s["domain"],
-                **{key: s[key] for key in ("kind", "access", "provider", "query", "retrieved_at", "paper") if key in s},
+                **{key: s[key] for key in ("kind", "access", "provider", "query", "retrieved_at", "paper", "fulltext") if key in s},
                 "quote": next((n.get("quote", "") for n in notes if n["id"] == s["id"]), ""),
                 "summary": next((n.get("summary", "") for n in notes if n["id"] == s["id"]), ""),
                 "relevance": next((n.get("relevance", 0) for n in notes if n["id"] == s["id"]), 0),

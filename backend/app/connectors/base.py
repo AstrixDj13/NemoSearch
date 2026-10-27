@@ -49,7 +49,8 @@ class ScholarlyWork:
     retrieved_at: str         # ISO-8601 UTC time the provider answered
     query: str                # the exact query string sent
     is_open_access: bool = False
-    oa_url: str = ""          # where a free copy is hosted, if the provider knows one (never fetched)
+    oa_url: str = ""          # where a free copy is hosted, if the provider knows one
+    pdf_url: str = ""         # direct link to an open-access PDF; the only thing full-text reading fetches
 
     def to_dict(self) -> dict:
         return asdict(self)

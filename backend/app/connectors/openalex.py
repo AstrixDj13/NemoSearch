@@ -18,6 +18,7 @@ from typing import Optional
 import httpx
 
 from .base import ConnectorError, QueryRecord, ScholarlyWork, Throttle, TTLCache, get_with_retry, utc_now
+from .fulltext import FullText, fetch_pdf_text
 
 log = logging.getLogger("nemosearch.connectors.openalex")
 
@@ -87,6 +88,8 @@ def to_work(item: dict, query: str, retrieved_at: str) -> Optional[ScholarlyWork
         query=query,
         is_open_access=bool(oa.get("is_oa")),
         oa_url=best_oa.get("landing_page_url") or best_oa.get("pdf_url") or oa.get("oa_url") or "",
+        # Only a location OpenAlex marks as open access counts; a primary PDF link may sit behind a paywall
+        pdf_url=(best_oa.get("pdf_url") or (loc.get("pdf_url") if loc.get("is_oa") else "") or "") if oa.get("is_oa") else "",
     )
 
 
@@ -100,6 +103,11 @@ class OpenAlexConnector:
         # Keyless limit is 10/s, keyed 30/s; leave headroom for other clients on the same network
         self.throttle = Throttle(per_second=8 if self.api_key else 4)
         self.cache = TTLCache(ttl_seconds=6 * 3600)
+        # Open-access PDFs live on publishers' and repositories' own servers, not on the OpenAlex API
+        self.pdf_client = httpx.AsyncClient(
+            timeout=30, follow_redirects=True, headers={"User-Agent": "NemoSearch/1.0 (+open-access full text)"}
+        )
+        self.pdf_throttle = Throttle(per_second=2)
 
     def simulated_failure(self) -> bool:
         return self.name in {s.strip() for s in os.getenv("NEMOSEARCH_SIMULATE_FAILURE", "").lower().split(",")}
@@ -135,3 +143,9 @@ class OpenAlexConnector:
         self.cache.put(key, (works, retrieved_at))
         record.status, record.results = "ok", len(works)
         return works
+
+    async def fulltext(self, pdf_url: str) -> FullText:
+        """Text of an open-access PDF that OpenAlex listed for a work. Raises ConnectorError."""
+        if self.simulated_failure():
+            raise ConnectorError("simulated failure (NEMOSEARCH_SIMULATE_FAILURE)")
+        return await fetch_pdf_text(self.pdf_client, pdf_url, self.pdf_throttle, self.name)
