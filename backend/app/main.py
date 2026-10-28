@@ -240,6 +240,19 @@ def _not_found(e: NotFound):
     raise HTTPException(status_code=404, detail=f"Not found: {e}")
 
 
+@app.get("/api/trending-topics")
+async def trending_topics():
+    """Most-published research topics of the last 30 days (OpenAlex), for the home page's example question.
+
+    On failure the list is empty, so the page shows a generic prompt instead of made-up topics.
+    """
+    try:
+        return await scholarly.by_name["openalex"].trending_topics()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("trending topics unavailable: %s", e)
+        return {"topics": [], "error": str(e), "source": "OpenAlex"}
+
+
 @app.get("/api/storage")
 async def storage_info():
     """Where history lives, so the UI can describe it accurately (a server-side SQLite file, not the browser)."""

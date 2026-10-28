@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import date, timedelta
 from typing import Optional
 
 import httpx
@@ -149,3 +150,35 @@ class OpenAlexConnector:
         if self.simulated_failure():
             raise ConnectorError("simulated failure (NEMOSEARCH_SIMULATE_FAILURE)")
         return await fetch_pdf_text(self.pdf_client, pdf_url, self.pdf_throttle, self.name)
+
+    async def trending_topics(self, days: int = 30, n: int = 8) -> dict:
+        """Topics with the most articles published worldwide in the last `days` days, as OpenAlex counts them.
+
+        A plain publication count per topic (no ranking model). Raises ConnectorError on failure.
+        """
+        today = date.today()
+        start = today - timedelta(days=days)
+        key = f"trending|{start}|{n}"
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+        params = {
+            "filter": f"from_publication_date:{start},to_publication_date:{today},type:article",
+            "group_by": "primary_topic.id",
+            "per_page": max(1, min(n, 50)),
+        }
+        record = QueryRecord(connector=self.name, query="trending topics", sent_at=utc_now(), params=dict(params))
+        if self.api_key:
+            params["api_key"] = self.api_key
+        response = await get_with_retry(self.client, API, params, self.throttle, record)
+        try:
+            groups = response.json().get("group_by") or []
+        except ValueError as e:
+            raise ConnectorError(f"unreadable response: {e}", transient=False) from e
+        topics = [
+            {"name": g["key_display_name"], "count": g["count"], "id": g["key"]}
+            for g in groups if g.get("key_display_name") and g.get("key") != "unknown"
+        ][:n]
+        result = {"topics": topics, "window_days": days, "since": str(start), "retrieved_at": utc_now(), "source": "OpenAlex"}
+        self.cache.put(key, result)
+        return result
