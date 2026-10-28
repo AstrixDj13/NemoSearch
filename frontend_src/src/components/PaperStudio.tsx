@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   Check,
+  Columns2,
   Copy,
   Download,
+  FileCode,
   FolderArchive,
-  GraduationCap,
-  History,
   Image as ImageIcon,
   Layers,
   LoaderCircle,
+  Maximize2,
   Plus,
   RefreshCw,
   Sparkles,
   Upload,
   Wand2,
+  WrapText,
   X,
 } from 'lucide-react'
 import { defaultTemplates } from '../data'
@@ -30,11 +32,11 @@ interface PaperStudioProps {
 }
 
 const QUICK_PROMPTS = [
-  { label: '📐 Formal Math Derivations', prompt: 'Derive formal mathematical equations for the computational cost and routing objective in \\begin{equation} blocks' },
-  { label: '📊 Comparative Benchmark Table', prompt: 'Add a clean LaTeX table comparing FLOPs, memory bounds, routing latency, and accuracy across architectures' },
-  { label: '🔍 Deepen Related Work & Citations', prompt: 'Expand the Related Work section, rigorously comparing our framework against foundational literature with \\cite{}' },
-  { label: '⚙️ Add Algorithmic Pseudocode', prompt: 'Add an algorithm environment with algorithmicx defining the complete step-by-step routing and inference procedure' },
-  { label: '⚖️ Expand Critical Trade-offs', prompt: 'Deepen the Discussion and Limitations section, analyzing GPU memory bandwidth bottlenecks and batch-size variations' },
+  { label: 'Formal math derivations', prompt: 'Derive formal mathematical equations for the computational cost and routing objective in \\begin{equation} blocks' },
+  { label: 'Benchmark table', prompt: 'Add a clean LaTeX table comparing FLOPs, memory bounds, routing latency, and accuracy across architectures' },
+  { label: 'Deepen related work', prompt: 'Expand the Related Work section, rigorously comparing our framework against foundational literature with \\cite{}' },
+  { label: 'Algorithm pseudocode', prompt: 'Add an algorithm environment with algorithmicx defining the complete step-by-step routing and inference procedure' },
+  { label: 'Expand trade-offs', prompt: 'Deepen the Discussion and Limitations section, analyzing GPU memory bandwidth bottlenecks and batch-size variations' },
 ]
 
 export default function PaperStudio({
@@ -53,9 +55,26 @@ export default function PaperStudio({
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
   const [isRefining, setIsRefining] = useState<boolean>(false)
   const [installModalOpen, setInstallModalOpen] = useState<boolean>(false)
+  // Which panes are visible: both side by side, or one maximized with the other minimized
+  const [layout, setLayout] = useState<'split' | 'editor' | 'preview'>('split')
+  const [wrap, setWrap] = useState(false)
+
+  // The template dialog takes focus when it opens and gives it back to whatever opened it
+  const firstFieldRef = useRef<HTMLInputElement>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (installModalOpen) {
+      returnFocusRef.current = document.activeElement as HTMLElement | null
+      firstFieldRef.current?.focus()
+    } else {
+      returnFocusRef.current?.focus()
+      returnFocusRef.current = null
+    }
+  }, [installModalOpen])
 
   // Dynamic Topic Selection linked to Recent Research / Library
-  const [currentTopic, setCurrentTopic] = useState<string>(topic || 'Dense vs. mixture-of-experts models for efficient inference')
+  // Starts empty unless opened from a real report; nothing is drafted until the user asks
+  const [currentTopic, setCurrentTopic] = useState<string>(topic || '')
   const [currentReport, setCurrentReport] = useState<string>(reportText || '')
   const [currentSources, setCurrentSources] = useState<Source[]>(sources || [])
 
@@ -109,13 +128,6 @@ export default function PaperStudio({
       .catch(() => {})
   }, [])
 
-  // Auto-generate paper on mount or when current topic changes
-  useEffect(() => {
-    if (!latexCode) {
-      generatePaper(selectedTemplateId, currentTopic, currentReport, currentSources)
-    }
-  }, [currentTopic])
-
   const handleTopicSelect = (selectedTitle: string) => {
     const found = savedReports.find((r) => r.title === selectedTitle)
     if (found) {
@@ -124,11 +136,8 @@ export default function PaperStudio({
       setCurrentReport(reportTxt)
       const srcList = found.sourcesData && found.sourcesData.length > 0 ? found.sourcesData : sources
       setCurrentSources(srcList)
-      onNotify(`Switched to research topic: "${found.title}". Synthesizing draft...`)
-      generatePaper(selectedTemplateId, found.title, reportTxt, srcList)
     } else {
       setCurrentTopic(selectedTitle)
-      generatePaper(selectedTemplateId, selectedTitle, currentReport, currentSources)
     }
   }
 
@@ -301,8 +310,7 @@ Under distributed serving clusters, communication latency scales sublinearly whe
           setTemplates((prev) => [...prev, data.template])
           setSelectedTemplateId(data.template.id)
           setInstallModalOpen(false)
-          onNotify(`Installed template "${customName}"! Re-generating paper...`)
-          generatePaper(data.template.id)
+          onNotify(`Installed template "${customName}". It applies the next time you draft.`)
         }
       }
     } catch {
@@ -450,7 +458,7 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
     const headline = titleMatch ? titleMatch[1].replace(/\\\\/g, ' ').replace(/\\textbf\{([^}]+)\}/g, '$1').trim() : currentTopic
 
     const abstractMatch = latexCode.match(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/)
-    const abstractText = abstractMatch ? abstractMatch[1].trim() : `In this paper, we investigate ${currentTopic} through an autonomous multi-agent literature synthesis pipeline.`
+    const abstractText = abstractMatch ? inlineLatex(abstractMatch[1].trim()) : `In this paper, we investigate ${currentTopic} through an autonomous multi-agent literature synthesis pipeline.`
 
     const secRegex = /\\section\*?\{([^}]+)\}([\s\S]*?)(?=\\section\*?\{|\\begin\{thebibliography\}|\\bibliography|\\end\{document\}|$)/g
     const sections: { title: string; body: string }[] = []
@@ -467,107 +475,128 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
 
   const previewDoc = parseDocumentForPreview()
 
+  const hasDraft = latexCode.trim().length > 0
+  const editable = activeFileId === 'main.tex' || activeFileId === 'references.bib'
+  const fileKind = activeFileId.endsWith('.tex')
+    ? 'LaTeX'
+    : activeFileId.endsWith('.bib')
+      ? 'BibTeX'
+      : activeFileId.endsWith('.md')
+        ? 'Markdown'
+        : activeFileId.endsWith('.png')
+          ? 'Figure'
+          : 'Style'
+  const folder = /^0\d_/.test(activeFileId) ? 'sections/' : activeFileId.endsWith('.png') ? 'figures/' : /\.(sty|cls)$/.test(activeFileId) ? 'styles/' : ''
+
+  // Pane controls: each pane can take the full width; the other collapses to a strip that restores the split
+  const paneButtons = (pane: 'editor' | 'preview', name: string) => {
+    const other = pane === 'editor' ? 'preview' : 'editor'
+    return layout === pane ? (
+      <button type="button" className="pane-control" onClick={() => setLayout('split')} aria-label={`Restore split view (show the ${other} again)`} title="Restore split view">
+        <Columns2 size={16} aria-hidden="true" />
+        <span>Split view</span>
+      </button>
+    ) : (
+      <button type="button" className="pane-control icon" onClick={() => setLayout(pane)} aria-label={`Maximize ${name}`} title={`Maximize ${name}`}>
+        <Maximize2 size={16} aria-hidden="true" />
+      </button>
+    )
+  }
+  const minimizedPane = (pane: 'editor' | 'preview', name: string) => (
+    <section className="studio-pane minimized" aria-label={`${name} (minimized)`}>
+      <button type="button" className="pane-restore" onClick={() => setLayout('split')}>
+        {pane === 'editor' ? <FileCode size={16} aria-hidden="true" /> : <Layers size={16} aria-hidden="true" />}
+        <span>Show {name}</span>
+      </button>
+    </section>
+  )
+
   return (
     <div className="paper-studio-container">
-      {/* Top Controls Bar with Topic Selector & Template Selector */}
-      <div className="studio-topbar">
-        <div className="studio-topbar-left">
-          <div className="section-label">
-            <GraduationCap size={14} /> Paper Studio &bull; Autonomous LaTeX & BibTeX Co-Author
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginTop: '6px' }}>
-            {/* Topic Selector from Recent Research */}
-            <div className="studio-template-picker">
-              <label htmlFor="topic-select" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <History size={13} /> Research Topic:
-              </label>
-              <select
-                id="topic-select"
-                value={currentTopic}
-                onChange={(e) => handleTopicSelect(e.target.value)}
-                style={{ maxWidth: '340px' }}
-              >
-                {savedReports.map((r) => (
-                  <option key={r.id || r.title} value={r.title}>
-                    {r.title}
-                  </option>
-                ))}
-                {!savedReports.some((r) => r.title === currentTopic) && (
-                  <option value={currentTopic}>{currentTopic}</option>
-                )}
-              </select>
-            </div>
-
-            {/* Template Selector */}
-            <div className="studio-template-picker">
-              <label htmlFor="template-select">Venue Template:</label>
-              <select
-                id="template-select"
-                value={selectedTemplateId}
-                onChange={(e) => {
-                  const nextId = e.target.value
-                  if (nextId === 'custom_install_action') {
-                    setInstallModalOpen(true)
-                  } else {
-                    setSelectedTemplateId(nextId)
-                    generatePaper(nextId)
-                  }
-                }}
-              >
-                {templates.map((tpl) => (
-                  <option key={tpl.id} value={tpl.id}>
-                    {tpl.name}
-                  </option>
-                ))}
-                <option value="custom_install_action">+ Install Custom Journal Template...</option>
-              </select>
-            </div>
+      {/* Same heading pattern as Library: plain title, one short description, then the page's tools */}
+      <header>
+        <div className="page-heading">
+          <div>
+            <h1>Paper Studio</h1>
           </div>
         </div>
-
-        <div className="studio-topbar-actions">
-          <button
-            type="button"
-            className="studio-btn"
-            onClick={() => setInstallModalOpen(true)}
-            title="Upload or configure any journal's custom LaTeX template"
-          >
-            <Upload size={14} /> Install Template
+        <p className="page-description">Draft a LaTeX paper and BibTeX references from your verified research, then steer the co-author.</p>
+        <div className="studio-actions">
+          <button type="button" className="studio-btn" onClick={() => setInstallModalOpen(true)}>
+            <Upload size={16} aria-hidden="true" /> Install template
           </button>
           <button
             type="button"
-            className="studio-btn"
+            className={`studio-btn ${hasDraft ? '' : 'studio-btn-primary'}`}
             onClick={() => generatePaper(selectedTemplateId)}
-            disabled={isGenerating || isRefining}
-            title="Autonomously synthesize complete paper from verified research"
+            disabled={!currentTopic || isGenerating || isRefining}
           >
-            {isGenerating ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
-            {isGenerating ? 'Synthesizing...' : 'Re-Draft Paper'}
+            {isGenerating ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            {isGenerating ? 'Drafting…' : hasDraft ? 'Re-draft paper' : 'Draft paper'}
           </button>
-          <button
-            type="button"
-            className="studio-btn studio-btn-primary"
-            onClick={handleDownloadZip}
-            title="Download complete compilable package with main.tex, references.bib, sections/, styles/, and README"
+          <button type="button" className={`studio-btn ${hasDraft ? 'studio-btn-primary' : ''}`} onClick={handleDownloadZip} disabled={!hasDraft}>
+            <FolderArchive size={16} aria-hidden="true" /> Download .zip
+          </button>
+        </div>
+      </header>
+
+      <div className="studio-settings">
+        <div className="studio-field">
+          <label htmlFor="topic-select">Research topic</label>
+          <select id="topic-select" value={currentTopic} onChange={(e) => handleTopicSelect(e.target.value)} aria-describedby="topic-hint">
+            <option value="" disabled>
+              {savedReports.length ? 'Choose a research topic…' : 'No saved research yet'}
+            </option>
+            {savedReports.map((r) => (
+              <option key={r.id || r.title} value={r.title}>
+                {r.title}
+              </option>
+            ))}
+            {currentTopic && !savedReports.some((r) => r.title === currentTopic) && <option value={currentTopic}>{currentTopic}</option>}
+          </select>
+          <p className="studio-field-hint" id="topic-hint">
+            {!savedReports.length
+              ? 'Run a research first; Paper Studio drafts from its brief and sources.'
+              : hasDraft
+                ? 'Changing the topic or template takes effect when you re-draft.'
+                : 'Choose a topic and template, then select Draft paper.'}
+          </p>
+        </div>
+        <div className="studio-field">
+          <label htmlFor="template-select">Venue template</label>
+          <select
+            id="template-select"
+            value={selectedTemplateId}
+            onChange={(e) => {
+              const nextId = e.target.value
+              if (nextId === 'custom_install_action') {
+                setInstallModalOpen(true)
+              } else {
+                setSelectedTemplateId(nextId)
+              }
+            }}
           >
-            <FolderArchive size={15} /> Download .zip Package
-          </button>
+            {templates.map((tpl) => (
+              <option key={tpl.id} value={tpl.id}>
+                {tpl.name}
+              </option>
+            ))}
+            <option value="custom_install_action">Install a custom template…</option>
+          </select>
         </div>
       </div>
 
-      {/* Human-in-the-Loop AI Co-Author Bar */}
-      <section className="studio-coauthor-card">
+      <section className="studio-coauthor-card" aria-labelledby="coauthor-title">
         <div className="coauthor-header">
-          <div className="coauthor-badge">
-            <Sparkles size={13} />
-            <span>AI Co-Author &bull; Human-in-the-Loop Steering</span>
-          </div>
-          <span className="coauthor-tip">
-            Steer Nemotron Ultra to write a full 3-page paper, derive new proofs, format tables, or expand sections.
-          </span>
+          <h2 id="coauthor-title">
+            <Sparkles size={15} aria-hidden="true" /> Steer the co-author
+          </h2>
+          <p id="coauthor-hint">
+            {hasDraft
+              ? 'Ask Nemotron to expand sections, add derivations or tables, or write the full paper.'
+              : 'Available once there is a draft to steer.'}
+          </p>
         </div>
-
         <form
           className="coauthor-input-row"
           onSubmit={(e) => {
@@ -575,33 +604,34 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
             handleRefinePaper()
           }}
         >
+          <label className="visually-hidden" htmlFor="coauthor-instruction">
+            Instruction for the co-author
+          </label>
           <input
+            id="coauthor-instruction"
             type="text"
             className="coauthor-text-input"
             value={humanInstruction}
             onChange={(e) => setHumanInstruction(e.target.value)}
-            placeholder="Instruct the AI co-author: e.g. 'Write a 3-page comprehensive paper using the research findings and citations', 'Add FLOPs table'..."
-            disabled={isRefining || isGenerating}
+            placeholder="e.g. Add a table comparing FLOPs and latency"
+            aria-describedby="coauthor-hint"
+            disabled={!hasDraft || isRefining || isGenerating}
           />
-          <button
-            type="submit"
-            className="studio-btn studio-btn-primary"
-            disabled={!humanInstruction.trim() || isRefining || isGenerating}
-            style={{ minHeight: '38px', padding: '0 16px' }}
-          >
-            {isRefining ? <LoaderCircle size={14} className="spin" /> : <Wand2 size={14} />}
-            {isRefining ? 'Writing 3-Page Paper...' : 'Steer & Write'}
+          <button type="submit" className="studio-btn studio-btn-primary" disabled={!hasDraft || !humanInstruction.trim() || isRefining || isGenerating}>
+            {isRefining ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Wand2 size={16} aria-hidden="true" />}
+            {isRefining ? 'Writing…' : 'Steer & write'}
           </button>
         </form>
-
-        <div className="coauthor-pills-row">
-          <span className="pills-label">Quick Steering:</span>
-          {QUICK_PROMPTS.map((qp, idx) => (
+        <div className="coauthor-pills-row" role="group" aria-labelledby="quick-steering-label">
+          <span className="pills-label" id="quick-steering-label">
+            Quick steering
+          </span>
+          {QUICK_PROMPTS.map((qp) => (
             <button
               type="button"
-              key={idx}
+              key={qp.label}
               className="coauthor-pill-btn"
-              disabled={isRefining || isGenerating}
+              disabled={!hasDraft || isRefining || isGenerating}
               onClick={() => {
                 setHumanInstruction(qp.prompt)
                 handleRefinePaper(qp.prompt)
@@ -613,168 +643,178 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
         </div>
       </section>
 
-      {/* Progress banner when Nemotron Ultra is actively writing */}
-      {isRefining && (
-        <div className="refine-progress-banner">
-          <LoaderCircle size={16} className="spin" />
-          <span>
-            <strong>Nemotron Ultra 550B is actively writing your paper</strong> using verified research findings and citations for &ldquo;{currentTopic}&rdquo;. Synthesizing manuscript (~20-30s)...
-          </span>
-        </div>
-      )}
+      <div className="refine-progress-banner" role="status">
+        {isRefining && (
+          <>
+            <LoaderCircle size={16} className="spin" aria-hidden="true" />
+            <span>
+              Nemotron is writing your paper from the verified research on “{currentTopic}”. This usually takes 20–30 seconds.
+            </span>
+          </>
+        )}
+      </div>
 
-      {/* Spacious 2-Column Studio Workspace: Left = Code Editor, Right = Live Formatted Paper Preview */}
-      <div className="studio-dual-pane">
-        {/* Left Pane: Code Editor with Line Numbers */}
-        <section className="studio-code-pane">
-          <div className="studio-code-tabs">
-            <div className="code-tabs-left">
-              <div className="file-breadcrumb">
-                {activeFileId.includes('01_') || activeFileId.includes('02_') || activeFileId.includes('03_') || activeFileId.includes('04_') ? (
-                  <span>sections / </span>
-                ) : activeFileId.endsWith('.png') ? (
-                  <span>figures / </span>
-                ) : activeFileId.endsWith('.sty') || activeFileId.endsWith('.cls') ? (
-                  <span>styles / </span>
-                ) : null}
-                <span>{activeFileId}</span>
+      <div className={`studio-dual-pane layout-${layout}`}>
+        {layout === 'preview' ? (
+          minimizedPane('editor', 'editor')
+        ) : (
+          <section className="studio-pane studio-code-pane" aria-labelledby="editor-title">
+            <div className="pane-header">
+              <div className="pane-title">
+                <h2 id="editor-title">
+                  <span className="visually-hidden">Editor: </span>
+                  {folder && <span className="file-folder">{folder}</span>}
+                  {activeFileId}
+                </h2>
+                <span className="file-badge-pill">{fileKind}</span>
+                {hasDraft && !isImageFile && (
+                  <span className="pane-meta">
+                    {lineCount} lines{!editable && ' · read-only'}
+                  </span>
+                )}
               </div>
-              <span className="file-badge-pill">
-                {activeFileId.endsWith('.tex')
-                  ? 'LaTeX'
-                  : activeFileId.endsWith('.bib')
-                  ? 'BibTeX'
-                  : activeFileId.endsWith('.md')
-                  ? 'Markdown'
-                  : activeFileId.endsWith('.png')
-                  ? 'Figure'
-                  : 'Style'}
-              </span>
-              <span style={{ fontSize: '11px', color: 'var(--muted-text)', fontFamily: 'monospace' }}>
-                {!isImageFile && `(${lineCount} lines)`}
-              </span>
+              <div className="pane-controls">
+                {hasDraft && !isImageFile && (
+                  <>
+                    <button
+                      type="button"
+                      className={`pane-control icon ${wrap ? 'on' : ''}`}
+                      aria-pressed={wrap}
+                      onClick={() => setWrap((w) => !w)}
+                      aria-label="Wrap long lines"
+                      title="Wrap long lines"
+                    >
+                      <WrapText size={16} aria-hidden="true" />
+                    </button>
+                    <button type="button" className="pane-control icon" onClick={handleCopyCurrentFile} aria-label={`Copy ${activeFileId}`} title={`Copy ${activeFileId}`}>
+                      <Copy size={16} aria-hidden="true" />
+                    </button>
+                    <button type="button" className="pane-control icon" onClick={handleDownloadCurrentFile} aria-label={`Download ${activeFileId}`} title={`Download ${activeFileId}`}>
+                      <Download size={16} aria-hidden="true" />
+                    </button>
+                    <span className="pane-divider" aria-hidden="true" />
+                  </>
+                )}
+                {paneButtons('editor', 'editor')}
+              </div>
             </div>
 
-            <div className="code-tabs-right">
-              {!isImageFile && (
-                <>
-                  <button type="button" onClick={handleCopyCurrentFile} title={`Copy ${activeFileId}`}>
-                    <Copy size={12} /> Copy
-                  </button>
-                  <button type="button" onClick={handleDownloadCurrentFile} title={`Download ${activeFileId}`}>
-                    <Download size={12} /> Download
-                  </button>
-                </>
+            <div className="studio-editor-area">
+              {!hasDraft ? (
+                <div className="studio-empty">
+                  {isGenerating ? (
+                    <p role="status">
+                      <LoaderCircle size={16} className="spin" aria-hidden="true" /> Drafting “{currentTopic}”…
+                    </p>
+                  ) : (
+                    <p>No draft yet. {currentTopic ? 'Select Draft paper to write one.' : 'Choose a research topic above to begin.'}</p>
+                  )}
+                </div>
+              ) : isImageFile ? (
+                <div className="asset-preview-card">
+                  <div className="asset-image-box">
+                    <ImageIcon size={40} aria-hidden="true" />
+                    <span className="asset-name">{activeFileId}</span>
+                  </div>
+                  <p className="asset-caption">
+                    Placeholder for a figure about <strong>{currentTopic}</strong>. Add your own image with this name, then include it with:
+                  </p>
+                  <pre className="asset-latex-code">{`\\begin{figure}[t]
+  \\centering
+  \\includegraphics[width=\\linewidth]{figures/${activeFileId}}
+  \\caption{...}
+  \\label{fig:${activeFileId.replace(/\.[^/.]+$/, '')}}
+\\end{figure}`}</pre>
+                </div>
+              ) : (
+                <div className={`editor-with-lines ${wrap ? 'wrapped' : ''}`}>
+                  {!wrap && (
+                    <div className="line-numbers-gutter" ref={gutterRef} aria-hidden="true">
+                      {lineNumbers.map((num) => (
+                        <div key={num}>{num}</div>
+                      ))}
+                    </div>
+                  )}
+                  <textarea
+                    ref={textareaRef}
+                    className="studio-textarea"
+                    value={activeContent}
+                    onChange={(e) => handleActiveFileChange(e.target.value)}
+                    onScroll={syncScroll}
+                    readOnly={!editable}
+                    aria-label={`${fileKind} source of ${activeFileId}${editable ? '' : ' (read-only, generated from main.tex)'}`}
+                    spellCheck={false}
+                  />
+                </div>
               )}
             </div>
-          </div>
+          </section>
+        )}
 
-          <div className="studio-editor-area">
-            {isImageFile ? (
-              <div className="asset-preview-card">
-                <div className="asset-image-box">
-                  <ImageIcon size={44} style={{ color: '#ec4899' }} />
-                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--ink-100)' }}>
-                    {activeFileId}
-                  </span>
-                  <span style={{ fontSize: '10px', color: 'var(--muted-text)' }}>
-                    1920 &times; 1080 PNG &bull; Vector Render Ready
-                  </span>
-                </div>
-                <div className="asset-caption">
-                  Rendered figure asset for <strong>{currentTopic}</strong>. Ready for inclusion in LaTeX manuscripts via <code>\includegraphics</code>.
-                </div>
-                <div className="asset-latex-code">
-                  <div>% LaTeX inclusion snippet for {activeFileId}:</div>
-                  <div>\begin&#123;figure&#125;[t]</div>
-                  <div>&nbsp;&nbsp;\centering</div>
-                  <div>&nbsp;&nbsp;\includegraphics[width=\linewidth]&#123;figures/{activeFileId}&#125;</div>
-                  <div>&nbsp;&nbsp;\caption&#123;Empirical trade-offs and architectural evaluation for {currentTopic}.&#125;</div>
-                  <div>&nbsp;&nbsp;\label&#123;fig:{activeFileId.replace(/\.[^/.]+$/, '')}&#125;</div>
-                  <div>\end&#123;figure&#125;</div>
-                </div>
+        {layout === 'editor' ? (
+          minimizedPane('preview', 'preview')
+        ) : (
+          <section className="studio-pane studio-preview-pane" aria-labelledby="preview-title">
+            <div className="pane-header">
+              <div className="pane-title">
+                <h2 id="preview-title">Preview</h2>
+                <span className="file-badge-pill">{currentTpl.venue || currentTpl.name}</span>
+              </div>
+              <div className="pane-controls">{paneButtons('preview', 'preview')}</div>
+            </div>
+
+            {/* Focusable so keyboard users can scroll the preview */}
+            {!hasDraft ? (
+              <div className="studio-empty">
+                <p>The formatted paper appears here once a draft exists.</p>
               </div>
             ) : (
-              <div className="editor-with-lines">
-                <div className="line-numbers-gutter" ref={gutterRef}>
-                  {lineNumbers.map((num) => (
-                    <div key={num}>{num}</div>
-                  ))}
+            <div className="preview-scroll" tabIndex={0} aria-label="Formatted manuscript preview">
+              <article className="academic-paper-sheet">
+                <div className="paper-title-area">
+                  <h3 className="paper-headline">{previewDoc.headline}</h3>
+                  <div className="paper-authors">
+                    <strong>NemoSearch Autonomous Research Group</strong>
+                    <span>Nebius AI Cloud · NVIDIA Nemotron</span>
+                  </div>
                 </div>
-                <textarea
-                  ref={textareaRef}
-                  className="studio-textarea"
-                  value={activeContent}
-                  onChange={(e) => handleActiveFileChange(e.target.value)}
-                  onScroll={syncScroll}
-                  placeholder={`Content of ${activeFileId}...`}
-                  spellCheck={false}
-                />
-              </div>
+
+                <div className="paper-abstract-card">
+                  <h4 className="abstract-heading">Abstract</h4>
+                  <p>{previewDoc.abstractText}</p>
+                </div>
+
+                <div className="paper-body-preview">
+                  {previewDoc.sections.length > 0 ? (
+                    previewDoc.sections.map((sec, idx) => (
+                      <div key={idx} className="paper-section">
+                        <h4>{`${idx + 1}. ${sec.title}`}</h4>
+                        <RenderSectionBody body={sec.body} />
+                      </div>
+                    ))
+                  ) : (
+                    <p className="paper-empty">{isGenerating ? 'Drafting the paper…' : 'No sections yet. Re-draft the paper or steer the co-author.'}</p>
+                  )}
+
+                  <h4>References</h4>
+                  <ol className="preview-references-list">
+                    {currentSources.map((s, idx) => {
+                      const year = s.paper?.year ?? s.year
+                      return (
+                        <li className="preview-ref-entry" key={s.id || idx}>
+                          <strong>{s.authors || s.domain}</strong>
+                          {year ? ` (${year})` : ''}. {s.title}. <em>{s.paper?.venue || s.venue || s.domain}</em>.
+                          {(s.paper?.doi || s.doi) && ` DOI: ${s.paper?.doi || s.doi}`}
+                        </li>
+                      )
+                    })}
+                  </ol>
+                </div>
+              </article>
+            </div>
             )}
-          </div>
-        </section>
-
-        {/* Right Pane: Dynamically Parsed & Rendered Formatted Academic Paper */}
-        <section className="studio-preview-pane">
-          <div className="preview-pane-header">
-            <span>
-              <Layers size={14} /> Formatted Manuscript Preview
-            </span>
-            <span className="venue-tag">{currentTpl.venue || currentTpl.name}</span>
-          </div>
-
-          <div className="academic-paper-sheet">
-            <div className="paper-title-area">
-              <h1 className="paper-headline">{previewDoc.headline}</h1>
-              <div className="paper-authors">
-                <strong>NemoSearch Autonomous Research Group</strong>
-                <span>Nebius AI Cloud &bull; NVIDIA Nemotron 3 Multi-Agent Ensemble</span>
-                <span className="paper-email">team@nemosearch.ai</span>
-              </div>
-            </div>
-
-            <div className="paper-abstract-card">
-              <span className="abstract-heading">Abstract</span>
-              <p>{previewDoc.abstractText}</p>
-            </div>
-
-            <div className="paper-body-preview">
-              {previewDoc.sections.length > 0 ? (
-                previewDoc.sections.map((sec, idx) => (
-                  <div key={idx} style={{ marginBottom: '22px' }}>
-                    <h3>{`${idx + 1}. ${sec.title}`}</h3>
-                    <RenderSectionBody body={sec.body} />
-                  </div>
-                ))
-              ) : (
-                <>
-                  <h3>1. Introduction</h3>
-                  <p>
-                    Understanding the core mechanisms of <em>{currentTopic}</em> requires reconciling theoretical formulations with empirical hardware constraints.
-                  </p>
-                  <h3>2. Theoretical Formulation</h3>
-                  <div className="math-display-block">
-                    {"$$\\mathcal{C}(x) = \\sum_{k=1}^K g_k(x) \\cdot \\Phi_k(x; \\theta_k) + \\Omega_{\\text{latency}}(B, L)$$"}
-                  </div>
-                </>
-              )}
-
-              <h3>References (BibTeX Mapped)</h3>
-              <div className="preview-references-list">
-                {currentSources.map((s, idx) => (
-                  <div className="preview-ref-entry" key={s.id || idx}>
-                    <span className="ref-index">[{idx + 1}]</span>
-                    <div>
-                      <strong>{s.authors || s.domain}</strong> (2024). {s.title}.{' '}
-                      <em>{s.venue || s.domain}</em>. {s.doi && <span>DOI: {s.doi}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
+          </section>
+        )}
       </div>
 
       {/* Install Custom Template Modal */}
@@ -785,81 +825,90 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
             if (e.target === e.currentTarget) setInstallModalOpen(false)
           }}
         >
-          <div className="slides-modal" role="dialog" aria-modal="true" style={{ maxWidth: '640px' }}>
+          <div
+            className="slides-modal studio-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="install-template-title"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setInstallModalOpen(false)
+            }}
+          >
             <div className="modal-top">
               <span className="section-label">
-                <Plus size={14} /> Install Custom Journal / Conference Template
+                <Plus size={14} aria-hidden="true" /> Install template
               </span>
               <button
                 type="button"
                 className="icon-button"
                 onClick={() => setInstallModalOpen(false)}
-                aria-label="Close modal"
+                aria-label="Close"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <h2 style={{ fontSize: '22px', margin: '12px 0 6px' }}>
-              Add Any World-Wide Journal Template
+            <h2 id="install-template-title" className="studio-modal-title">
+              Add a journal or conference template
             </h2>
             <p className="slides-subtitle">
               Format papers for any niche conference, university dissertation, or publisher standard.
             </p>
 
-            <form onSubmit={handleInstallCustom} style={{ display: 'grid', gap: '14px', marginTop: '18px' }}>
+            <form onSubmit={handleInstallCustom} className="studio-modal-form">
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', textTransform: 'uppercase', marginBottom: '6px' }}>
-                  Template Name *
+                <label htmlFor="tpl-name">
+                  Template name (required)
                 </label>
                 <input
+                  id="tpl-name"
                   type="text"
                   required
-                  placeholder="e.g. CVPR / AAAI / Oxford Bioinformatics"
+                  ref={firstFieldRef}
+                  placeholder="e.g. CVPR, AAAI, Bioinformatics"
                   value={customName}
                   onChange={(e) => setCustomName(e.target.value)}
-                  style={{ width: '100%', padding: '10px 14px', border: '1px solid var(--hairline)', borderRadius: '9px', fontSize: '14px' }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', textTransform: 'uppercase', marginBottom: '6px' }}>
-                  Target Venue / Publisher
+                <label htmlFor="tpl-venue">
+                  Venue or publisher
                 </label>
                 <input
+                  id="tpl-venue"
                   type="text"
-                  placeholder="e.g. IEEE / Springer / Oxford University Press"
+                  placeholder="e.g. IEEE, Springer"
                   value={customVenue}
                   onChange={(e) => setCustomVenue(e.target.value)}
-                  style={{ width: '100%', padding: '10px 14px', border: '1px solid var(--hairline)', borderRadius: '9px', fontSize: '14px' }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', textTransform: 'uppercase', marginBottom: '6px' }}>
-                  {"Document Class (\\documentclass{...})"}
+                <label htmlFor="tpl-class">
+                  Document class
                 </label>
                 <input
+                  id="tpl-class"
                   type="text"
                   value={customDocClass}
                   onChange={(e) => setCustomDocClass(e.target.value)}
-                  style={{ width: '100%', padding: '10px 14px', border: '1px solid var(--hairline)', borderRadius: '9px', fontSize: '13px', fontFamily: 'monospace' }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', textTransform: 'uppercase', marginBottom: '6px' }}>
-                  {"Custom Preamble & Packages (\\usepackage{...})"}
+                <label htmlFor="tpl-preamble">
+                  Preamble and packages
                 </label>
                 <textarea
+                  id="tpl-preamble"
                   rows={4}
                   value={customPreamble}
                   onChange={(e) => setCustomPreamble(e.target.value)}
-                  style={{ width: '100%', padding: '10px 14px', border: '1px solid var(--hairline)', borderRadius: '9px', fontSize: '12px', fontFamily: 'monospace' }}
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px' }}>
+              <div className="studio-modal-actions">
                 <button
                   type="button"
                   className="studio-btn"
@@ -868,7 +917,7 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
                   Cancel
                 </button>
                 <button type="submit" className="primary-button">
-                  <Check size={15} /> Save & Apply Template
+                  <Check size={15} aria-hidden="true" /> Save and apply
                 </button>
               </div>
             </form>
@@ -877,6 +926,13 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
       )}
     </div>
   )
+}
+
+/** Readable text for simple inline LaTeX commands in the preview (the .tex source itself is untouched). */
+function inlineLatex(text: string): string {
+  return text
+    .replace(/\\cite\{([^}]+)\}/g, '[$1]')
+    .replace(/\\(?:textbf|textit|emph|texttt|textsc)\{([^}]+)\}/g, '$1')
 }
 
 function RenderSectionBody({ body }: { body: string }) {
@@ -926,7 +982,7 @@ function RenderSectionBody({ body }: { body: string }) {
               const headers = rows[0]
               const dataRows = rows.slice(1)
               return (
-                <div key={cIdx} style={{ overflowX: 'auto', margin: '18px 0' }}>
+                <div key={cIdx} className="paper-table-wrap" tabIndex={0} role="region" aria-label="Table (scrolls sideways)">
                   <table className="paper-latex-table">
                     <thead>
                       <tr>
@@ -975,17 +1031,12 @@ function RenderSectionBody({ body }: { body: string }) {
         }
 
         // Regular paragraphs
-        const cleanPara = trimmed
+        const cleanPara = inlineLatex(trimmed)
           .replace(/\\subsection\*?\{([^}]+)\}/g, '• $1:')
           .replace(/\\subsubsection\*?\{([^}]+)\}/g, '• $1:')
-          .replace(/\\cite\{([^}]+)\}/g, '[$1]')
-          .replace(/\\textbf\{([^}]+)\}/g, '$1')
-          .replace(/\\textit\{([^}]+)\}/g, '$1')
-          .replace(/\\emph\{([^}]+)\}/g, '$1')
-          .replace(/\\texttt\{([^}]+)\}/g, '$1')
 
         return (
-          <p key={cIdx} style={{ fontSize: '14px', lineHeight: '1.7', margin: '0 0 14px', color: 'oklch(0.3 0.005 260)' }}>
+          <p key={cIdx}>
             {cleanPara}
           </p>
         )

@@ -1,5 +1,5 @@
 export type FocusMode = 'web' | 'academic' | 'finance' | 'news'
-export type View = 'home' | 'running' | 'report' | 'library' | 'activity' | 'studio'
+export type View = 'home' | 'running' | 'report' | 'library' | 'studio'
 
 export interface Source {
   id: number
@@ -13,8 +13,10 @@ export interface Source {
   snippet?: string
   /** 'paper' for scholarly metadata records, 'web' for pages; absent on older saved reports */
   kind?: 'paper' | 'web'
-  /** What was actually read: a web page's text, a paper's abstract, or bibliographic metadata only */
-  access?: 'page' | 'abstract' | 'metadata'
+  /** What was actually read: a web page's text, a paper's open-access full text, its abstract, or metadata only */
+  access?: 'page' | 'fulltext' | 'abstract' | 'metadata'
+  /** For papers: whether the full text was read, and if not, why */
+  fulltext?: FullTextRecord
   provider?: string
   /** The exact query that returned this source */
   query?: string
@@ -30,10 +32,21 @@ export interface Source {
   year?: number | string
 }
 
+export interface FullTextRecord {
+  status: 'ok' | 'failed' | 'skipped' | 'unavailable'
+  url?: string
+  retrieved_at?: string
+  pages?: number
+  chars?: number
+  /** Only the first part of a long paper was given to the reader */
+  truncated?: boolean
+  error?: string
+}
+
 export interface PaperMeta {
   connector: string
   connector_label: string
-  /** The provider's own identifier, e.g. https://openalex.org/W… */
+  /** The provider's own identifier, e.g. https://openalex.org/W… or https://arxiv.org/abs/…v2 */
   source_id: string
   authors: string[]
   year: number | null
@@ -43,6 +56,7 @@ export interface PaperMeta {
   status: 'published' | 'preprint' | 'accepted' | 'retracted' | 'unknown'
   is_open_access: boolean
   oa_url: string
+  pdf_url?: string
 }
 
 export interface ConnectorQuery {

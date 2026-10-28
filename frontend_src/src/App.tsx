@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
@@ -15,24 +14,19 @@ import {
   ChartNoAxesCombined,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock3,
-  Code,
   Copy,
   CopyPlus,
   Download,
   ExternalLink,
-  FileCode,
   FileText,
   FolderOpen,
   FolderPlus,
   Globe2,
   GraduationCap,
-  Image as ImageIcon,
   Library,
   LoaderCircle,
   Menu,
-  Network,
   Newspaper,
   PanelLeftClose,
   PanelLeftOpen,
@@ -59,6 +53,7 @@ import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './com
 import { isPaper, sourceOrigin } from './sources'
 import { byRecency, makeTitle, normalizeReports, reportTime, runNumbers } from './library'
 import PaperStudio from './components/PaperStudio'
+import StudioFileTree from './components/StudioFileTree'
 import {
   defaultResearchSteps,
   sampleSources,
@@ -72,7 +67,6 @@ import {
   presetInfo,
   routingModels,
   storeRouting,
-  teamSteps,
 } from './routing'
 import type { Preset, Routing, RoutingScope, TeamModels } from './routing'
 import './App.css'
@@ -85,21 +79,6 @@ const focusOptions: { id: FocusMode; label: string; icon: typeof Globe2 }[] = [
 ]
 
 const stepIcons = [BrainCircuit, ScanSearch, BookOpen, ShieldCheck, PenLine]
-
-const examplePrompts = [
-  { label: 'Dense vs. mixture-of-experts', query: SAMPLE_QUERY },
-  { label: 'Real-time multimodal agents', query: 'Map the emerging stack for real-time multimodal agents' },
-  { label: 'Inference costs and margins', query: 'How do inference costs change AI product margins?' },
-]
-
-const viewNames: Record<View, string> = {
-  home: 'New research',
-  running: 'Research in progress',
-  report: 'Research brief',
-  library: 'Library',
-  activity: 'Agent activity',
-  studio: 'Paper Studio',
-}
 
 const defaultSlides: SlideItem[] = [
   { num: '01', title: 'The decision', bullets: ['Dense vs. sparse inference in one operational frame.'] },
@@ -125,6 +104,7 @@ interface BackendSource {
   query?: string
   retrieved_at?: string
   paper?: Source['paper']
+  fulltext?: Source['fulltext']
 }
 
 interface FollowUpTurn {
@@ -156,6 +136,7 @@ const toSource = (s: BackendSource, fallbackRelevance = 85): Source => ({
   query: s.query,
   retrieved_at: s.retrieved_at,
   paper: s.paper,
+  fulltext: s.fulltext,
 })
 
 function Logo({ compact = false }: { compact?: boolean }) {
@@ -535,6 +516,21 @@ export default function App() {
   }
 
   // Fetch health status on mount
+  // Most-published research topics of the last 30 days (OpenAlex); one is shown as the input's example
+  const [trendingTopics, setTrendingTopics] = useState<string[]>([])
+  const [topicIndex, setTopicIndex] = useState(0)
+  useEffect(() => {
+    fetch('/api/trending-topics')
+      .then((res) => res.json())
+      .then((data) => {
+        const names = Array.isArray(data.topics) ? data.topics.map((t: { name: string }) => t.name).filter(Boolean) : []
+        setTrendingTopics(names)
+        setTopicIndex(Math.floor(Math.random() * Math.max(1, names.length)))
+      })
+      .catch(() => setTrendingTopics([]))
+  }, [])
+  const exampleTopic = trendingTopics.length ? trendingTopics[topicIndex % trendingTopics.length] : ''
+
   useEffect(() => {
     fetch('/api/health')
       .then((res) => res.json())
@@ -635,6 +631,7 @@ export default function App() {
   }
 
   const navigate = (nextView: View) => {
+    if (nextView === 'home' && view !== 'home') setTopicIndex((i) => i + 1)
     setView(nextView)
     setSidebarOpen(false)
     if (nextView === 'home') window.setTimeout(() => searchRef.current?.focus(), 50)
@@ -1138,11 +1135,6 @@ export default function App() {
     />
   )
 
-  const fillExample = (value: string) => {
-    setQuery(value)
-    searchRef.current?.focus()
-  }
-
   const openRouting = () => {
     routingOpener.current = document.activeElement as HTMLElement | null
     setRoutingOpen(true)
@@ -1461,7 +1453,7 @@ export default function App() {
     return (
       <div className={`library-row ${report.archived ? 'archived' : ''}`} key={report.id} data-report-id={report.id}>
         <span className="library-title">
-          <span>{String(index + 1).padStart(2, '0')}</span>
+          <span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
           {isRenaming ? (
             renameInput(report, 'library-rename')
           ) : (
@@ -1471,9 +1463,18 @@ export default function App() {
             </button>
           )}
         </span>
-        <span>{report.mode}</span>
-        <span>{report.sources}</span>
-        <span>{reportTime(report, now)}</span>
+        <span>
+          <span className="visually-hidden">Focus: </span>
+          {report.mode}
+        </span>
+        <span>
+          <span className="visually-hidden">Sources: </span>
+          {report.sources}
+        </span>
+        <span>
+          <span className="visually-hidden">Updated: </span>
+          {reportTime(report, now)}
+        </span>
         <ItemMenu label={`Actions for “${report.title}”`} actions={reportActions(report, 'library')} />
       </div>
     )
@@ -1501,16 +1502,11 @@ export default function App() {
   const filteredArchived = archivedReports.filter(matchesFilter)
   // Paper Studio Overleaf file tree state in left sidebar
   const [studioActiveFile, setStudioActiveFile] = useState<string>('main.tex')
-  const [studioFileFilter, setStudioFileFilter] = useState<string>('')
-  const [studioFoldersOpen, setStudioFoldersOpen] = useState<Record<string, boolean>>({
-    sections: true,
-    figures: true,
-    styles: true,
-  })
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <DotField running={view === 'running'} />
+      {/* The dot pattern belongs to the research composer only; working views stay plain white */}
+      {view === 'home' && <DotField />}
 
       {sidebarOpen && (
         <button
@@ -1562,163 +1558,14 @@ export default function App() {
           >
             <GraduationCap size={17} /> <span className="nav-label">Paper Studio</span>
           </button>
-          <button
-            type="button"
-            className={view === 'activity' ? 'active' : ''}
-            onClick={() => navigate('activity')}
-            title="Agent activity"
-          >
-            <Activity size={17} /> <span className="nav-label">Agent activity</span>
-          </button>
         </nav>
         {view === 'studio' ? (
-          <div className="sidebar-project-files">
-            <div className="sidebar-project-header">
-              <div className="overleaf-title-badge">
-                <span className="overleaf-dot" />
-                <span>PROJECT FILES</span>
-              </div>
-              <span className="tree-badge">Overleaf</span>
-            </div>
-
-            <div className="sidebar-project-search">
-              <input
-                type="text"
-                placeholder="Filter files..."
-                value={studioFileFilter}
-                onChange={(e) => setStudioFileFilter(e.target.value)}
-              />
-            </div>
-
-            <div className="sidebar-project-tree">
-              {/* sections/ */}
-              <div className="tree-folder-group">
-                <div
-                  className="sidebar-tree-row folder-row"
-                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, sections: !p.sections }))}
-                >
-                  {studioFoldersOpen.sections ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <FolderOpen size={13} className="tree-icon-folder" />
-                  <span>sections/</span>
-                  <span className="tree-badge">4</span>
-                </div>
-                {studioFoldersOpen.sections && (
-                  <div className="sidebar-tree-children">
-                    {[
-                      { id: '01_introduction.tex', label: '01_introduction.tex' },
-                      { id: '02_related_work.tex', label: '02_related_work.tex' },
-                      { id: '03_methodology.tex', label: '03_methodology.tex' },
-                      { id: '04_experiments.tex', label: '04_experiments.tex' },
-                    ]
-                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
-                      .map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
-                          onClick={() => setStudioActiveFile(f.id)}
-                        >
-                          <FileCode size={12} className="tree-icon-tex" />
-                          <span>{f.label}</span>
-                        </button>
-                      ))}
-                  </div>
-                )}
-              </div>
-
-              {/* figures/ */}
-              <div className="tree-folder-group">
-                <div
-                  className="sidebar-tree-row folder-row"
-                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, figures: !p.figures }))}
-                >
-                  {studioFoldersOpen.figures ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <FolderOpen size={13} className="tree-icon-folder" />
-                  <span>figures/</span>
-                  <span className="tree-badge">2</span>
-                </div>
-                {studioFoldersOpen.figures && (
-                  <div className="sidebar-tree-children">
-                    {[
-                      { id: 'system_pipeline.png', label: 'system_pipeline.png' },
-                      { id: 'tradeoff_benchmarks.png', label: 'tradeoff_benchmarks.png' },
-                    ]
-                      .filter((f) => !studioFileFilter || f.label.toLowerCase().includes(studioFileFilter.toLowerCase()))
-                      .map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          className={`sidebar-tree-row file-row ${studioActiveFile === f.id ? 'active' : ''}`}
-                          onClick={() => setStudioActiveFile(f.id)}
-                        >
-                          <ImageIcon size={12} className="tree-icon-image" />
-                          <span>{f.label}</span>
-                        </button>
-                      ))}
-                  </div>
-                )}
-              </div>
-
-              {/* styles/ */}
-              <div className="tree-folder-group">
-                <div
-                  className="sidebar-tree-row folder-row"
-                  onClick={() => setStudioFoldersOpen((p) => ({ ...p, styles: !p.styles }))}
-                >
-                  {studioFoldersOpen.styles ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <FolderOpen size={13} className="tree-icon-folder" />
-                  <span>styles/</span>
-                  <span className="tree-badge">1</span>
-                </div>
-                {studioFoldersOpen.styles && (
-                  <div className="sidebar-tree-children">
-                    <button
-                      type="button"
-                      className={`sidebar-tree-row file-row ${studioActiveFile === 'neurips_2024.sty' ? 'active' : ''}`}
-                      onClick={() => setStudioActiveFile('neurips_2024.sty')}
-                    >
-                      <Code size={12} className="tree-icon-sty" />
-                      <span>neurips_2024.sty</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Root files */}
-              {(!studioFileFilter || 'main.tex'.includes(studioFileFilter.toLowerCase())) && (
-                <button
-                  type="button"
-                  className={`sidebar-tree-row file-row ${studioActiveFile === 'main.tex' ? 'active' : ''}`}
-                  onClick={() => setStudioActiveFile('main.tex')}
-                >
-                  <FileCode size={13} className="tree-icon-tex" />
-                  <span>main.tex</span>
-                </button>
-              )}
-
-              {(!studioFileFilter || 'references.bib'.includes(studioFileFilter.toLowerCase())) && (
-                <button
-                  type="button"
-                  className={`sidebar-tree-row file-row ${studioActiveFile === 'references.bib' ? 'active' : ''}`}
-                  onClick={() => setStudioActiveFile('references.bib')}
-                >
-                  <BookOpen size={13} className="tree-icon-bib" />
-                  <span>references.bib</span>
-                </button>
-              )}
-
-              {(!studioFileFilter || 'readme.md'.includes(studioFileFilter.toLowerCase())) && (
-                <button
-                  type="button"
-                  className={`sidebar-tree-row file-row ${studioActiveFile === 'README.md' ? 'active' : ''}`}
-                  onClick={() => setStudioActiveFile('README.md')}
-                >
-                  <FileText size={13} className="tree-icon-md" />
-                  <span>README.md</span>
-                </button>
-              )}
-            </div>
-          </div>
+          <StudioFileTree
+            activeFile={studioActiveFile}
+            onSelect={setStudioActiveFile}
+            collapsed={sidebarCollapsed}
+            onExpand={toggleSidebar}
+          />
         ) : (
           <nav className="recent-block" aria-labelledby="recent-title">
             <div className="recent-header">
@@ -1794,23 +1641,14 @@ export default function App() {
       </aside>
 
       <div className="workspace">
-        <header className={`topbar ${view === 'home' ? 'topbar-home' : ''}`}>
-          <div className="topbar-left">
-            <IconButton label="Open navigation" className="mobile-menu" onClick={() => setSidebarOpen(true)}>
-              <Menu size={20} />
-            </IconButton>
-            <span className="mobile-logo">
-              <Logo compact />
-            </span>
-            <span className="breadcrumb-root">Workspace</span>
-            <span className="breadcrumb-slash">/</span>
-            <span>{viewNames[view]}</span>
-          </div>
-          <div className="topbar-right">
-            <span className="preview-badge">
-              <span /> {healthStatus.ok ? 'Nebius AI Cloud · Live' : 'Interactive preview'}
-            </span>
-          </div>
+        {/* Phones only: the sidebar is off-canvas there, so this bar holds the button that opens it */}
+        <header className="topbar">
+          <IconButton label="Open navigation" className="mobile-menu" onClick={() => setSidebarOpen(true)}>
+            <Menu size={20} />
+          </IconButton>
+          <span className="mobile-logo">
+            <Logo compact />
+          </span>
         </header>
 
         <main className={`main-content view-${view}`}>
@@ -1818,12 +1656,11 @@ export default function App() {
             <div className="home-grid">
               <section className="home-primary">
                 <div className="home-heading">
-                  <h1>
-                    Research without
-                    <br />
-                    the black box.
-                  </h1>
-                  <p>A focused team of Nemotron agents plans, searches, reads, and cites, so you can inspect every step.</p>
+                  <h1 id="home-title">What do you want to research?</h1>
+                  <p id="home-description">
+                    NemoSearch searches {providerOptions.includes('tavily') ? 'the web' : 'Wikipedia'}, plus OpenAlex and arXiv for academic
+                    questions, then writes a brief where each claim cites a quoted source you can open.
+                  </p>
                 </div>
 
                 <form
@@ -1840,8 +1677,9 @@ export default function App() {
                     onKeyDown={(event) => {
                       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') startResearch()
                     }}
-                    placeholder="What do you want to understand?"
-                    aria-label="Research question"
+                    placeholder={exampleTopic ? `Ask a question or name a topic, e.g. ${exampleTopic}` : 'Ask a question or name a topic'}
+                    aria-labelledby="home-title"
+                    aria-describedby="home-description"
                     rows={3}
                   />
                   {attachment && (
@@ -1867,19 +1705,24 @@ export default function App() {
                         ref={fileRef}
                         type="file"
                         className="visually-hidden"
+                        // Opened by the attach button next to it, so it stays out of the tab order
+                        tabIndex={-1}
+                        aria-label="Attach a file to the project"
                         onChange={(event) => {
                           const file = event.target.files?.[0] ?? null
                           setAttachmentFile(file)
                           setAttachment(file?.name || '')
                         }}
                       />
-                      <IconButton label="Attach a source file" onClick={() => fileRef.current?.click()}>
+                      <IconButton label="Attach a file to the project (not read during research)" onClick={() => fileRef.current?.click()}>
                         <Plus size={18} />
                       </IconButton>
                       <button
                         type="button"
                         role="switch"
                         aria-checked={deepMode}
+                        aria-describedby="deep-research-detail"
+                        title="5 web searches with 4 results each, then a second round to fill gaps. Off: 3 searches with 3 results."
                         className={`deep-toggle ${deepMode ? 'enabled' : ''}`}
                         onClick={() => setDeepMode(!deepMode)}
                       >
@@ -1887,6 +1730,9 @@ export default function App() {
                           <span />
                         </span>
                         Deep research
+                        <span className="visually-hidden" id="deep-research-detail">
+                          On: 5 web searches with 4 results each, then a second round to fill gaps. Off: 3 searches with 3 results each.
+                        </span>
                       </button>
                       <label className={`project-chip ${runProject ? 'assigned' : ''}`}>
                         <FolderOpen size={15} aria-hidden="true" />
@@ -1926,14 +1772,6 @@ export default function App() {
                     </button>
                   </div>
                 </form>
-                <div className="home-examples" aria-label="Example questions">
-                  <span>Try</span>
-                  {examplePrompts.map((example) => (
-                    <button type="button" key={example.label} title={example.query} onClick={() => fillExample(example.query)}>
-                      {example.label}
-                    </button>
-                  ))}
-                </div>
               </section>
             </div>
           )}
@@ -2311,9 +2149,7 @@ export default function App() {
             <section className="library-view">
               <div className="page-heading">
                 <div>
-                  <div className="section-label">
-                    {scopeProject ? (scopeProject.archived ? 'Archived project' : 'Project') : 'Your research archive'}
-                  </div>
+                  {scopeProject && <div className="section-label">{scopeProject.archived ? 'Archived project' : 'Project'}</div>}
                   {scopeProject ? (
                     <>
                       <h1 className="project-title">{scopeProject.name}</h1>
@@ -2322,29 +2158,17 @@ export default function App() {
                   ) : scope === 'unassigned' ? (
                     <h1>Unassigned research</h1>
                   ) : (
-                    <h1>
-                      Pick up where
-                      <br />
-                      you left off.
-                    </h1>
+                    <h1>Library</h1>
                   )}
                 </div>
-                <div className="page-heading-actions">
-                  {scopeProject && <ItemMenu label={`Actions for project “${scopeProject.name}”`} actions={projectActions(scopeProject)} />}
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => {
-                      newResearch()
-                      if (scopeProject && !scopeProject.archived) setRunProject(scopeProject.id)
-                    }}
-                  >
-                    <Plus size={16} /> {scopeProject && !scopeProject.archived ? 'New research in project' : 'New research'}
-                  </button>
-                </div>
+                {scopeProject && (
+                  <div className="page-heading-actions">
+                    <ItemMenu label={`Actions for project “${scopeProject.name}”`} actions={projectActions(scopeProject)} />
+                  </div>
+                )}
               </div>
               <p className="library-storage">
-                Saved on this NemoSearch server, so your research, sources and files are here after reloads and on later visits.
+                Your research runs, saved sources and files, stored on this NemoSearch server.
               </p>
               <div className="library-toolbar">
               {scopeSelect('library-scope', 'scope-select library-scope')}
@@ -2364,7 +2188,7 @@ export default function App() {
               </div>
               </div>
               <div className="library-list">
-                <div className="library-list-head">
+                <div className="library-list-head" aria-hidden="true">
                   <span>Research</span>
                   <span>Focus</span>
                   <span>Sources</span>
@@ -2403,90 +2227,12 @@ export default function App() {
             </section>
           )}
 
-          {view === 'activity' && (
-            <section className="activity-view">
-              <div className="page-heading">
-                <div>
-                  <div className="section-label">Right model for the right task</div>
-                  <h1>
-                    A small team,
-                    <br />
-                    not a giant call.
-                  </h1>
-                </div>
-                <span className="activity-ready">
-                  <span /> {healthStatus.ok ? 'All systems ready · Nebius API' : 'Ready'}
-                </span>
-              </div>
-              <p className="activity-lead">
-                NemoSearch routes each research stage across three Nemotron 3 tiers. Tavily supplies fresh web evidence, and
-                academic questions also search OpenAlex for scholarly papers.
-              </p>
-              <div className="activity-metrics">
-                <div>
-                  <span>Specialized model tiers</span>
-                  <strong>03</strong>
-                  <small>Nano / Super / Ultra</small>
-                </div>
-                <div>
-                  <span>Parallel evidence readers</span>
-                  <strong>04</strong>
-                  <small>Async, semaphore governed</small>
-                </div>
-                <div>
-                  <span>Research stages visible</span>
-                  <strong>05</strong>
-                  <small>Plan → search → read → critique → write</small>
-                </div>
-              </div>
-              <section className="routing-ledger" aria-labelledby="ledger-title">
-                <div className="run-list-heading">
-                  <span className="section-label" id="ledger-title">Routing ledger</span>
-                  <span className="ledger-summary">
-                    {routingLabel} routing
-                    <button type="button" className="ledger-action" aria-haspopup="dialog" onClick={openRouting}>
-                      Customize routing
-                    </button>
-                  </span>
-                </div>
-                {defaultResearchSteps.map((step, index) => {
-                  const Icon = stepIcons[index]
-                  return (
-                    <div className="ledger-row" key={step.name}>
-                      <span className="ledger-icon" aria-hidden="true">
-                        <Icon size={19} />
-                      </span>
-                      <strong>{step.name}</strong>
-                      <span className="ledger-model-label">{modelLabel(teamModels[teamSteps[index].key])}</span>
-                      <p>{step.detail}</p>
-                      <span className="ledger-status">
-                        <Check size={14} aria-hidden="true" /> Ready
-                      </span>
-                    </div>
-                  )
-                })}
-              </section>
-              <div className="activity-footer">
-                <div>
-                  <Network size={22} />
-                  <p>
-                    <strong>Efficiency is a design decision.</strong>
-                    <br />
-                    Use Nano for speed, Super for parallel evidence work, and Ultra only where deep reasoning pays for itself.
-                  </p>
-                </div>
-                <button type="button" className="primary-button" onClick={newResearch}>
-                  Start a research run <ArrowRight size={16} />
-                </button>
-              </div>
-            </section>
-          )}
-
           {view === 'studio' && (
             <PaperStudio
-              topic={submittedQuery}
-              reportText={isLiveRun && liveReport ? liveReport : SAMPLE_QUERY}
-              sources={currentSources}
+              // Only a real research run preselects a topic; the sample brief never does
+              topic={isLiveRun ? submittedQuery : ''}
+              reportText={isLiveRun ? liveReport : ''}
+              sources={isLiveRun ? currentSources : []}
               savedReports={libraryReports}
               activeFileId={studioActiveFile}
               onSelectFile={setStudioActiveFile}
@@ -2523,7 +2269,7 @@ export default function App() {
             {selectedSource.access === 'metadata' ? null : (
               <div className="extracted-quote">
                 <span className="section-label">
-                  <Check size={13} /> {isPaper(selectedSource) ? 'Verbatim from the abstract' : 'Verbatim extraction'}
+                  <Check size={13} /> {!isPaper(selectedSource) ? 'Verbatim extraction' : selectedSource.access === 'fulltext' ? 'Verbatim from the full text' : 'Verbatim from the abstract'}
                 </span>
                 <blockquote>“{selectedSource.quote || selectedSource.snippet || selectedSource.summary}”</blockquote>
               </div>

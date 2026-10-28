@@ -39,7 +39,7 @@ export function SourceProvenance({ source }: { source: Source }) {
     ) : null
   }
   const p = source.paper!
-  const shortId = p.source_id.replace(/^https?:\/\/openalex\.org\//, '')
+  const shortId = p.source_id.replace(/^https?:\/\/(openalex\.org|arxiv\.org\/abs)\//, '')
   return (
     <div className="paper-meta">
       <p className="paper-authors">{formatAuthors(p.authors)}</p>
@@ -52,10 +52,8 @@ export function SourceProvenance({ source }: { source: Source }) {
         </p>
       )}
       <p className="paper-access">
-        {source.access === 'abstract'
-          ? 'Abstract only: the full text was not retrieved or read.'
-          : 'Metadata only: no abstract was available, so this paper was not used as evidence.'}
-        {p.is_open_access && p.oa_url && (
+        {accessText(source)}
+        {p.is_open_access && p.oa_url && source.access !== 'fulltext' && (
           <>
             {' '}
             <a href={p.oa_url} target="_blank" rel="noreferrer">
@@ -84,6 +82,37 @@ export function SourceProvenance({ source }: { source: Source }) {
   )
 }
 
+/** States plainly what was read; for papers not read in full, says why. */
+function accessText(source: Source) {
+  const ft = source.fulltext
+  if (source.access === 'fulltext' && ft) {
+    const pages = ft.pages ? `${ft.pages}-page ` : ''
+    return (
+      <>
+        Full text read from the{' '}
+        <a href={ft.url} target="_blank" rel="noreferrer">
+          {pages}open-access PDF
+        </a>
+        {ft.truncated ? ', first part only (long paper)' : ''}
+        {ft.retrieved_at ? `, retrieved ${formatRetrieved(ft.retrieved_at)}` : ''}.
+      </>
+    )
+  }
+  const why =
+    ft?.status === 'failed'
+      ? `its open-access copy couldn't be read: ${ft.error}`
+      : ft?.status === 'skipped'
+        ? ft.error
+        : source.paper?.is_open_access && source.paper.oa_url
+          ? 'its open-access copy is a web page, not a PDF it could read'
+          : ft?.status === 'unavailable' || !source.paper?.is_open_access
+            ? 'no open-access copy is listed'
+            : 'not retrieved'
+  return source.access === 'metadata'
+    ? `Metadata only: no abstract, and full text not read (${why}), so this paper was not used as evidence.`
+    : `Abstract only: full text not read (${why}).`
+}
+
 /** Shown on the report when part of the run's search coverage is missing. Never shown as success. */
 export function CoverageNotice({ coverage }: { coverage?: RunCoverage | null }) {
   if (!coverage || coverage.complete) return null
@@ -105,6 +134,8 @@ export function CoverageNotice({ coverage }: { coverage?: RunCoverage | null }) 
     </div>
   )
 }
+
+const CONNECTOR_LABEL: Record<string, string> = { openalex: 'OpenAlex', arxiv: 'arXiv' }
 
 const QUERY_STATUS: Record<string, string> = { ok: 'answered', cached: 'answered from cache', failed: 'failed', pending: 'pending' }
 
@@ -135,7 +166,7 @@ export function CoverageLog({ coverage }: { coverage?: RunCoverage | null }) {
             {coverage.scholarly.map((q, i) => (
               <tr key={`${q.query}-${i}`}>
                 <td>
-                  {q.connector === 'openalex' ? 'OpenAlex' : q.connector}: “{q.query}”
+                  {CONNECTOR_LABEL[q.connector] ?? q.connector}: “{q.query}”
                 </td>
                 <td>
                   {q.status === 'failed'
