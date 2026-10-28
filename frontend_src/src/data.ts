@@ -1,5 +1,5 @@
 export type FocusMode = 'web' | 'academic' | 'finance' | 'news'
-export type View = 'home' | 'running' | 'report' | 'library' | 'studio'
+export type View = 'home' | 'running' | 'report' | 'library' | 'network' | 'studio'
 
 export interface Source {
   id: number
@@ -108,6 +108,9 @@ export interface SavedReport {
   projectId?: string | null
   /** False for placeholder entries that have no stored report body */
   hasReport?: boolean
+  /** False when a collaborator ran this research in a shared project */
+  mine?: boolean
+  ownerName?: string
   mode: string
   time: string
   sources: number
@@ -228,7 +231,18 @@ export interface Project {
   archived: boolean
   createdAt: number
   updatedAt: number
-  counts: { reports: number; sources: number; attachments: number; exports: number }
+  /** 'member' when someone else shared the project with you */
+  role: 'owner' | 'member'
+  owner: { id: string; name: string; orcid: string | null } | null
+  counts: { reports: number; sources: number; attachments: number; exports: number; members: number }
+}
+
+export interface ProjectMember {
+  id: string
+  name: string
+  orcid: string | null
+  affiliation: string
+  addedAt: number
 }
 
 export interface SavedSourceRecord {
@@ -239,6 +253,8 @@ export interface SavedSourceRecord {
   title: string
   source: Source
   createdAt: number
+  /** False for sources a collaborator saved to a shared project */
+  mine?: boolean
 }
 
 export interface AttachmentRecord {
@@ -247,6 +263,7 @@ export interface AttachmentRecord {
   contentType: string
   size: number
   createdAt: number
+  ownerId?: string
 }
 
 export interface ExportRecord {
@@ -262,6 +279,7 @@ export interface ProjectDetail extends Project {
   sources: SavedSourceRecord[]
   attachments: AttachmentRecord[]
   exports: ExportRecord[]
+  members: ProjectMember[]
 }
 
 /** Which research the sidebar and library show: everything, Unassigned, or one project id */

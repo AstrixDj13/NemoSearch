@@ -2,40 +2,64 @@
 - Streaming research pipeline (with focus & depth parameters); finished runs are saved server-side
 - Multi-turn Follow-up conversation streaming (/api/followup)
 - 5-Slide Executive Outline generation (/api/slides)
-- Projects and research history persisted in SQLite (/api/projects, /api/reports, ...)
+- Accounts (ORCID sign-in), private projects and research history (/api/projects, /api/reports, ...)
+- NemoSearch Network: publishing, discovery and collaboration requests (/api/network/...)
+
+Every endpoint that reads or writes someone's data needs a signed-in account, and the data layer checks that
+account on each request (store.py, network.py); nothing relies on the interface hiding things.
 """
 from __future__ import annotations
 
 import json
 import logging
 import time
-from typing import Any, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Any, Optional
+from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 
-from fastapi import FastAPI, HTTPException, Query, Request  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
+import sqlalchemy as sa  # noqa: E402
+from fastapi import Depends, FastAPI, Query, Request  # noqa: E402
+from fastapi.concurrency import run_in_threadpool  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from . import auth as auth_module  # noqa: E402
+from . import network as network_module  # noqa: E402
+from .auth import Accounts, Unauthorized  # noqa: E402
+from .blobs import LocalBlobStore, content_disposition, open_blob_store  # noqa: E402
+from .config import settings  # noqa: E402
+from .db import create_db_engine, database_url, init_schema  # noqa: E402
+from .errors import Conflict, Forbidden, Invalid, NotFound, RateLimited, consume  # noqa: E402
 from .llm import LLM  # noqa: E402
+from .network import Network  # noqa: E402
 from .pipeline import answer_followup, generate_slides, run_pipeline  # noqa: E402
 from .scholarly import Scholarly  # noqa: E402
 from .search import Search  # noqa: E402
-from .store import MAX_ATTACHMENT_BYTES, NotFound, open_store  # noqa: E402
+from .store import MAX_ATTACHMENT_BYTES, Store  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 FRONTEND = ROOT / "frontend"
 
+_problems = settings.problems()
+if _problems:
+    raise RuntimeError("NemoSearch will not start with an unsafe configuration:\n- " + "\n- ".join(_problems))
+
 llm = LLM()
 search = Search()
 scholarly = Scholarly()
-store = open_store(ROOT)
+engine = create_db_engine(database_url(ROOT))
+init_schema(engine)
+blobs = open_blob_store(ROOT, settings.secret_key)
+store = Store(engine, blobs)
+accounts = Accounts(engine, blobs)
+network = Network(engine, blobs, store)
 
 FOCUS_LABELS = {"web": "All web", "academic": "Academic", "finance": "Finance & SEC", "news": "Recent news"}
 
@@ -44,15 +68,53 @@ FOCUS_LABELS = {"web": "All web", "academic": "Academic", "finance": "Finance & 
 async def lifespan(_: FastAPI):
     await llm.resolve_models()
     logging.getLogger("nemosearch").info(
-        "Mode=%s models=%s search=%s",
+        "Mode=%s models=%s search=%s database=%s",
         "MOCK" if llm.mock else "LIVE",
         llm.models,
         search.provider,
+        engine.dialect.name,
     )
     yield
 
 
 app = FastAPI(title="NemoSearch", lifespan=lifespan)
+
+# ---------------------------------------------------------------- errors, cross-site protection, headers
+for exc, status in ((Unauthorized, 401), (Forbidden, 403), (NotFound, 404), (Conflict, 409), (Invalid, 422), (RateLimited, 429)):
+    def _handler(_request: Request, e: Exception, status: int = status) -> JSONResponse:
+        detail = {401: "Sign in to continue.", 404: "Not found."}.get(status) or str(e)
+        return JSONResponse({"detail": detail}, status_code=status)
+
+    app.add_exception_handler(exc, _handler)
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def protect(request: Request, call_next):
+    # Session cookies are SameSite=Lax, and on top of that a state-changing request must come from this site.
+    # Browsers always send Origin on cross-site POST/PATCH/DELETE, so a page elsewhere cannot act as the user.
+    if request.method not in SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin and origin not in settings.allowed_origins:
+            host = request.headers.get("host", "")
+            if urlparse(origin).netloc != host:
+                return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    if settings.secure_cookies:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+CurrentUser = Annotated[sa.Row, Depends(accounts.require_user)]
+
+app.include_router(auth_module.build_router(accounts))
+app.include_router(network_module.build_router(network, accounts))
 
 
 class FollowUpRequest(BaseModel):
@@ -75,6 +137,11 @@ class SlidesRequest(BaseModel):
     models: dict = {}
 
 
+def _limit(user_id: str, kind: str, per_day: int, what: str) -> None:
+    with engine.begin() as conn:
+        consume(conn, user_id, kind, per_day, what)
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True, **llm.info(), "search_provider": search.provider}
@@ -94,7 +161,8 @@ async def models():
 
 
 @app.get("/api/research")
-async def research(
+def research(
+    user: CurrentUser,
     q: str = Query(..., min_length=3, max_length=500),
     depth: str = "quick",
     focus: str = "web",
@@ -106,8 +174,9 @@ async def research(
     project_id: Optional[str] = None,
     title: Optional[str] = Query(None, max_length=200),
 ):
+    _limit(user.id, "research", settings.limit_research_per_day, "research runs")
     overrides = {"planner": planner_model, "reader": reader_model, "critic": critic_model, "writer": writer_model}
-    project = store.resolve_project(project_id)
+    project = store.accessible_project(user.id, project_id)
 
     async def gen():
         report, reasoning, models = "", "", {}
@@ -127,7 +196,7 @@ async def research(
                 if kind == "done":
                     # Persist the finished run on the server, inside its project (or Unassigned)
                     try:
-                        saved = store.save_report({
+                        saved = await run_in_threadpool(store.save_report, user.id, {
                             "title": title or q.strip(), "question": q.strip(), "mode": FOCUS_LABELS.get(focus, "All web"),
                             "sources": ev.get("n_sources", 0), "reportText": report, "reasoningTrace": reasoning,
                             "sourcesData": [
@@ -154,7 +223,11 @@ async def research(
 
 
 @app.post("/api/followup")
-async def followup(req: FollowUpRequest):
+def followup(user: CurrentUser, req: FollowUpRequest):
+    if req.report_id and not store.can_read_report(user.id, req.report_id):
+        raise NotFound(req.report_id)
+    _limit(user.id, "followup", settings.limit_research_per_day * 5, "follow-up questions")
+
     async def gen():
         answer, new_sources = "", []
         try:
@@ -171,7 +244,7 @@ async def followup(req: FollowUpRequest):
                 if kind == "followup_done" and req.report_id and answer.strip():
                     # Keep the thread with its report so it survives reloads
                     try:
-                        store.add_followup(req.report_id, {
+                        await run_in_threadpool(store.add_followup, user.id, req.report_id, {
                             "question": req.question, "answer": answer, "createdAt": int(time.time() * 1000),
                         }, new_sources)
                         yield f"data: {json.dumps({'type': 'followup_saved'})}\n\n"
@@ -193,7 +266,8 @@ async def followup(req: FollowUpRequest):
 
 
 @app.post("/api/slides")
-async def slides_endpoint(req: SlidesRequest):
+async def slides_endpoint(req: SlidesRequest, user: CurrentUser):
+    await run_in_threadpool(_limit, user.id, "slides", settings.limit_research_per_day, "slide outlines")
     try:
         data = await generate_slides(req.topic, req.report, llm, req.models)
         return JSONResponse(data)
@@ -236,8 +310,8 @@ class ExportCreate(BaseModel):
     content: Optional[str] = None
 
 
-def _not_found(e: NotFound):
-    raise HTTPException(status_code=404, detail=f"Not found: {e}")
+class MemberAdd(BaseModel):
+    orcid: str
 
 
 @app.get("/api/trending-topics")
@@ -255,171 +329,156 @@ async def trending_topics():
 
 @app.get("/api/storage")
 async def storage_info():
-    """Where history lives, so the UI can describe it accurately (a server-side SQLite file, not the browser)."""
-    return {"kind": "server", "engine": "sqlite"}
+    """Where history lives, so the UI can describe it accurately (the server's database, not the browser)."""
+    return {"kind": "server", "engine": engine.dialect.name}
 
 
 @app.get("/api/projects")
-async def projects_list():
-    return store.list_projects()
+def projects_list(user: CurrentUser):
+    return store.list_projects(user.id)
 
 
 @app.post("/api/projects", status_code=201)
-async def projects_create(body: ProjectCreate):
+def projects_create(user: CurrentUser, body: ProjectCreate):
     if not body.name.strip():
-        raise HTTPException(status_code=422, detail="A project needs a name.")
-    return store.create_project(body.name, body.description)
+        raise Invalid("A project needs a name.")
+    return store.create_project(user.id, body.name, body.description)
 
 
 @app.get("/api/projects/{project_id}")
-async def projects_get(project_id: str):
-    try:
-        return store.get_project(project_id)
-    except NotFound as e:
-        _not_found(e)
+def projects_get(user: CurrentUser, project_id: str):
+    return store.get_project(user.id, project_id)
 
 
 @app.patch("/api/projects/{project_id}")
-async def projects_update(project_id: str, body: ProjectPatch):
+def projects_update(user: CurrentUser, project_id: str, body: ProjectPatch):
     if body.name is not None and not body.name.strip():
-        raise HTTPException(status_code=422, detail="A project needs a name.")
-    try:
-        return store.update_project(project_id, body.model_dump(exclude_none=True))
-    except NotFound as e:
-        _not_found(e)
+        raise Invalid("A project needs a name.")
+    return store.update_project(user.id, project_id, body.model_dump(exclude_none=True))
 
 
 @app.delete("/api/projects/{project_id}")
-async def projects_delete(project_id: str, reports: str = Query("unassign", pattern="^(unassign|delete)$")):
-    try:
-        return store.delete_project(project_id, delete_reports=reports == "delete")
-    except NotFound as e:
-        _not_found(e)
+def projects_delete(user: CurrentUser, project_id: str, reports: str = Query("unassign", pattern="^(unassign|delete)$")):
+    return store.delete_project(user.id, project_id, delete_reports=reports == "delete")
+
+
+@app.post("/api/projects/{project_id}/members")
+def projects_member_add(user: CurrentUser, project_id: str, body: MemberAdd):
+    return store.add_member(user.id, project_id, auth_module.normalize_orcid(body.orcid))
+
+
+@app.delete("/api/projects/{project_id}/members/{member_id}")
+def projects_member_remove(user: CurrentUser, project_id: str, member_id: str):
+    store.remove_member(user.id, project_id, member_id)
+    return {"ok": True}
 
 
 @app.get("/api/reports")
-async def reports_list(project: str = "all"):
-    return store.list_reports(project)
+def reports_list(user: CurrentUser, project: str = "all"):
+    return store.list_reports(user.id, project)
 
 
 @app.post("/api/reports/import")
-async def reports_import(reports: list[dict]):
-    return {"imported": store.import_reports(reports)}
+def reports_import(user: CurrentUser, reports: list[dict]):
+    return {"imported": store.import_reports(user.id, reports)}
 
 
 @app.get("/api/reports/{report_id}")
-async def reports_get(report_id: str):
-    try:
-        return store.get_report(report_id)
-    except NotFound as e:
-        _not_found(e)
+def reports_get(user: CurrentUser, report_id: str):
+    return store.get_report(user.id, report_id)
 
 
 @app.patch("/api/reports/{report_id}")
-async def reports_update(report_id: str, body: ReportPatch):
+def reports_update(user: CurrentUser, report_id: str, body: ReportPatch):
     patch = body.model_dump(exclude_none=True)
     if body.moveProject:
         patch["projectId"] = body.projectId  # None moves the report to Unassigned
     patch.pop("moveProject", None)
-    try:
-        return store.update_report(report_id, patch)
-    except NotFound as e:
-        _not_found(e)
+    return store.update_report(user.id, report_id, patch)
 
 
 @app.post("/api/reports/{report_id}/duplicate", status_code=201)
-async def reports_duplicate(report_id: str):
-    try:
-        return store.duplicate_report(report_id)
-    except NotFound as e:
-        _not_found(e)
+def reports_duplicate(user: CurrentUser, report_id: str):
+    return store.duplicate_report(user.id, report_id)
 
 
 @app.delete("/api/reports/{report_id}")
-async def reports_delete(report_id: str):
-    try:
-        store.set_report_deleted(report_id, True)
-        return {"ok": True}
-    except NotFound as e:
-        _not_found(e)
+def reports_delete(user: CurrentUser, report_id: str):
+    store.set_report_deleted(user.id, report_id, True)
+    return {"ok": True}
 
 
 @app.post("/api/reports/{report_id}/restore")
-async def reports_restore(report_id: str):
-    try:
-        store.set_report_deleted(report_id, False)
-        return {"ok": True}
-    except NotFound as e:
-        _not_found(e)
+def reports_restore(user: CurrentUser, report_id: str):
+    store.set_report_deleted(user.id, report_id, False)
+    return {"ok": True}
 
 
 @app.get("/api/sources")
-async def sources_list(project: str = "unassigned"):
-    return store.list_sources(project)
+def sources_list(user: CurrentUser, project: str = "unassigned"):
+    return store.list_sources(user.id, project)
 
 
 @app.post("/api/sources", status_code=201)
-async def sources_save(body: SourceCreate):
+def sources_save(user: CurrentUser, body: SourceCreate):
     if not body.source.get("url"):
-        raise HTTPException(status_code=422, detail="A saved source needs a URL.")
-    return store.save_source(body.projectId, body.reportId, body.source)
+        raise Invalid("A saved source needs a URL.")
+    return store.save_source(user.id, body.projectId, body.reportId, body.source)
 
 
 @app.delete("/api/sources/{source_id}")
-async def sources_delete(source_id: str):
-    try:
-        store.delete_source(source_id)
-        return {"ok": True}
-    except NotFound as e:
-        _not_found(e)
+def sources_delete(user: CurrentUser, source_id: str):
+    store.delete_source(user.id, source_id)
+    return {"ok": True}
 
 
 @app.post("/api/projects/{project_id}/attachments", status_code=201)
 async def attachments_upload(project_id: str, request: Request):
+    user = await run_in_threadpool(accounts.require_user, request)
+    if int(request.headers.get("content-length") or 0) > MAX_ATTACHMENT_BYTES:
+        raise Invalid("Files can be up to 15 MB.")
     data = await request.body()
     if not data:
-        raise HTTPException(status_code=422, detail="The file is empty.")
+        raise Invalid("The file is empty.")
     if len(data) > MAX_ATTACHMENT_BYTES:
-        raise HTTPException(status_code=413, detail="Files can be up to 15 MB.")
-    filename = request.headers.get("x-filename", "attachment")
-    try:
-        from urllib.parse import unquote
-
-        return store.add_attachment(project_id, unquote(filename), request.headers.get("content-type", "application/octet-stream"), data)
-    except NotFound as e:
-        _not_found(e)
+        raise Invalid("Files can be up to 15 MB.")
+    filename = unquote(request.headers.get("x-filename", "attachment"))
+    return await run_in_threadpool(store.add_attachment, user.id, project_id, filename,
+                                   request.headers.get("content-type", "application/octet-stream"), data)
 
 
 @app.get("/api/attachments/{attachment_id}")
-async def attachments_download(attachment_id: str):
-    try:
-        path, filename, content_type = store.attachment_file(attachment_id)
-    except NotFound as e:
-        _not_found(e)
-    return FileResponse(path, media_type=content_type, filename=filename)
+def attachments_download(user: CurrentUser, attachment_id: str):
+    return RedirectResponse(store.attachment_link(user.id, attachment_id), status_code=303)
 
 
 @app.delete("/api/attachments/{attachment_id}")
-async def attachments_delete(attachment_id: str):
-    try:
-        store.delete_attachment(attachment_id)
-        return {"ok": True}
-    except NotFound as e:
-        _not_found(e)
+def attachments_delete(user: CurrentUser, attachment_id: str):
+    store.delete_attachment(user.id, attachment_id)
+    return {"ok": True}
+
+
+@app.get("/api/files/{token}")
+def local_file(token: str):
+    """Serves a file from local storage through a signed, expiring link (development storage only)."""
+    if not isinstance(blobs, LocalBlobStore):
+        raise NotFound(token)
+    found = blobs.open_link(token)
+    if found is None:
+        raise NotFound(token)
+    path, filename, content_type = found
+    return FileResponse(path, media_type=content_type, headers={"Content-Disposition": content_disposition(filename)})
 
 
 @app.post("/api/exports", status_code=201)
-async def exports_record(body: ExportCreate):
-    return store.add_export(body.projectId, body.reportId, body.kind, body.filename, body.content)
+def exports_record(user: CurrentUser, body: ExportCreate):
+    return store.add_export(user.id, body.projectId, body.reportId, body.kind, body.filename, body.content)
 
 
 @app.get("/api/exports/{export_id}/download")
-async def exports_download(export_id: str):
-    try:
-        filename, content = store.export_content(export_id)
-    except NotFound as e:
-        _not_found(e)
-    return Response(content, media_type="text/markdown", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+def exports_download(user: CurrentUser, export_id: str):
+    filename, content = store.export_content(user.id, export_id)
+    return Response(content, media_type="text/markdown", headers={"Content-Disposition": content_disposition(filename)})
 
 
 # ------------------------------------------------ Paper Studio Endpoints
@@ -427,7 +486,6 @@ from .latex import (  # noqa: E402
     create_latex_zip,
     generate_latex_paper,
     get_all_templates,
-    install_custom_template,
     refine_latex_paper,
 )
 
@@ -468,21 +526,23 @@ ZipDownloadRequest.model_rebuild()
 
 
 @app.get("/api/paper/templates")
-async def paper_templates():
-    return {"templates": get_all_templates()}
+def paper_templates(user: CurrentUser):
+    return {"templates": get_all_templates(store.list_templates(user.id))}
 
 
 @app.post("/api/paper/install_template")
-async def install_template(req: InstallTemplateRequest):
-    tpl = install_custom_template(req.name, req.doc_class, req.preamble, req.venue)
+def install_template(user: CurrentUser, req: InstallTemplateRequest):
+    tpl = store.install_template(user.id, req.name, req.doc_class, req.preamble, req.venue)
     return {"ok": True, "template": tpl}
 
 
 @app.post("/api/paper/generate")
-async def generate_paper(req: PaperGenerateRequest):
+async def generate_paper(req: PaperGenerateRequest, user: CurrentUser):
+    await run_in_threadpool(_limit, user.id, "paper", settings.limit_research_per_day, "paper drafts")
+    custom = await run_in_threadpool(store.list_templates, user.id)
     try:
         res = await generate_latex_paper(
-            req.topic, req.report, req.sources, req.template_id, llm, req.custom_preamble
+            req.topic, req.report, req.sources, req.template_id, llm, req.custom_preamble, custom
         )
         return JSONResponse(res)
     except Exception as e:  # noqa: BLE001
@@ -491,7 +551,8 @@ async def generate_paper(req: PaperGenerateRequest):
 
 
 @app.post("/api/paper/refine")
-async def refine_paper_endpoint(req: PaperRefineRequest):
+async def refine_paper_endpoint(req: PaperRefineRequest, user: CurrentUser):
+    await run_in_threadpool(_limit, user.id, "paper_refine", settings.limit_research_per_day * 5, "paper refinements")
     try:
         res = await refine_latex_paper(
             req.topic, req.current_latex, req.instruction, req.sources, llm, req.report
@@ -503,7 +564,7 @@ async def refine_paper_endpoint(req: PaperRefineRequest):
 
 
 @app.post("/api/paper/download_zip")
-async def download_paper_zip(req: ZipDownloadRequest):
+def download_paper_zip(req: ZipDownloadRequest, user: CurrentUser):
     try:
         zip_bytes = create_latex_zip(req.topic, req.latex, req.bibtex)
         return Response(
@@ -524,5 +585,11 @@ async def index():
     return FileResponse(FRONTEND / "index.html")
 
 
-app.mount("/", StaticFiles(directory=FRONTEND), name="static")
+# Network pages have their own addresses so works and profiles can be shared as links
+@app.get("/network")
+@app.get("/network/{rest:path}")
+async def network_page(rest: str = ""):
+    return FileResponse(FRONTEND / "index.html")
 
+
+app.mount("/", StaticFiles(directory=FRONTEND), name="static")

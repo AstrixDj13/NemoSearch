@@ -5,7 +5,8 @@ import { inspectAttr } from 'kimi-plugin-inspect-react'
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
-  base: './',
+  // Absolute asset paths, so Network pages opened directly (shared links, reloads) still find them
+  base: '/',
   // inspectAttr adds source-path attributes for the dev inspector; keep them out of production bundles
   plugins: [command === 'serve' && inspectAttr(), react()],
   server: {

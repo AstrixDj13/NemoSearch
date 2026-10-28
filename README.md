@@ -79,6 +79,31 @@ cd backend
 ```
 Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
+Signing in uses ORCID. For local development without ORCID credentials, add `AUTH_DEV_LOGIN=1` to `.env`: the sign-in page then offers a development sign-in (refused anywhere but localhost).
+
+---
+
+## 🔐 Accounts, Library and Network
+
+- **Accounts**: sign in with ORCID only, so every account has a verified ORCID iD. Sessions are HttpOnly cookies, stored hashed.
+- **Library** (private): research, saved sources, files and exports belong to your account. Share a project with collaborators by ORCID iD; they can read it and add to it, and only you can rename, archive, delete or re-share it.
+- **Network** (public-facing): publish a PDF or one of your reports. Works start **Private**; **Request access** shows the metadata and shares the file only with people you approve; **Open** lets anyone read it. Making a work shareable requires a license and a rights confirmation.
+- **Ownership record**: every upload is SHA-256 fingerprinted and appended to a hash-chained, append-only log (immutable in PostgreSQL via trigger). It is evidence of who uploaded which bytes and when, not a certificate of authorship.
+- **Requests**: ask to read a work, or propose a collaboration; accepting a collaboration opens a shared project. Blocking, abuse reports, admin takedowns, per-account rate limits, and claiming papers published elsewhere (when OpenAlex lists your ORCID iD as an author) are built in. No feeds, likes or follower counts.
+- **Permissions** are enforced on the server for every request, including downloads (short-lived signed links). Private works never appear in search, profiles or listings.
+
+### Deploying
+Set `APP_ENV=production`; the server refuses to start until it has an https `APP_URL`, a `SECRET_KEY`, a PostgreSQL `DATABASE_URL`, S3-compatible storage (`STORAGE_BACKEND=s3`) and ORCID credentials. See `.env.example`. Tables are created on first start; later schema changes need a migration.
+
+Data from the old single-user database can be copied into an account with `python scripts/import_legacy_db.py <your ORCID iD>`.
+
+### Tests
+```powershell
+.\.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
+.\.venv\Scripts\python -m pytest backend\tests                 # SQLite
+$env:TEST_DB="postgres"; .\.venv\Scripts\python -m pytest backend\tests   # throwaway local PostgreSQL
+```
+
 ---
 
 ## 📋 Evaluation Criteria Mapping

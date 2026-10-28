@@ -141,13 +141,9 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     },
 }
 
-# In-memory custom user templates (custom .cls or .sty uploaded by researchers)
-CUSTOM_TEMPLATES: dict[str, dict[str, Any]] = {}
-
-
-def get_all_templates() -> list[dict[str, Any]]:
-    """Return all built-in and user-installed LaTeX templates."""
-    all_t = list(TEMPLATES.values()) + list(CUSTOM_TEMPLATES.values())
+def get_all_templates(custom: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Return the built-in templates plus one account's own (stored by store.Store.install_template)."""
+    all_t = list(TEMPLATES.values()) + list(custom or [])
     return [
         {
             "id": t["id"],
@@ -159,22 +155,6 @@ def get_all_templates() -> list[dict[str, Any]]:
     ]
 
 
-def install_custom_template(name: str, doc_class: str, preamble: str, venue: str = "") -> dict[str, Any]:
-    """Register a custom journal/conference LaTeX template uploaded or defined by the researcher."""
-    template_id = "custom_" + re.sub(r"[^a-zA-Z0-9_]", "", name.lower().replace(" ", "_"))
-    entry = {
-        "id": template_id,
-        "name": name,
-        "venue": venue or "Custom Journal / Conference Template",
-        "doc_class": doc_class or "\\documentclass[11pt]{article}",
-        "preamble": preamble or "\\usepackage{amsmath,amssymb,graphicx,booktabs,hyperref}",
-        "bib_style": "\\bibliographystyle{unsrt}\n\\bibliography{references}",
-        "custom": True,
-    }
-    CUSTOM_TEMPLATES[template_id] = entry
-    return entry
-
-
 async def generate_latex_paper(
     topic: str,
     report: str,
@@ -182,12 +162,13 @@ async def generate_latex_paper(
     template_id: str,
     llm: LLM,
     custom_preamble: str = "",
+    custom_templates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use Nemotron Ultra 550B to write a complete academic LaTeX paper grounded in verified sources."""
     stats = RunStats()
 
     # Resolve template
-    tpl = CUSTOM_TEMPLATES.get(template_id) or TEMPLATES.get(template_id) or TEMPLATES["neurips"]
+    tpl = {t["id"]: t for t in custom_templates or []}.get(template_id) or TEMPLATES.get(template_id) or TEMPLATES["neurips"]
     doc_class = tpl["doc_class"]
     preamble = custom_preamble if custom_preamble.strip() else tpl["preamble"]
     bib_style = tpl.get("bib_style", "\\bibliographystyle{unsrt}\n\\bibliography{references}")

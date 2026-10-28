@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+# A throwaway local PostgreSQL for `TEST_DB=postgres pytest backend/tests`
+pgserver>=0.1.4

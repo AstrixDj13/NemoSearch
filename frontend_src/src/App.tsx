@@ -26,7 +26,9 @@ import {
   GraduationCap,
   Library,
   LoaderCircle,
+  LogOut,
   Menu,
+  Network as NetworkIcon,
   Newspaper,
   PanelLeftClose,
   PanelLeftOpen,
@@ -39,15 +41,22 @@ import {
   Share2,
   Trash2,
   ShieldCheck,
+  Upload,
+  UserRound,
   SlidersHorizontal,
   X,
 } from 'lucide-react'
 import DotField from './components/DotField'
+import Logo from './components/Logo'
 import DeleteProjectDialog from './components/DeleteProjectDialog'
 import ItemMenu from './components/ItemMenu'
 import ProjectDialog from './components/ProjectDialog'
 import ProjectWorkspace from './components/ProjectWorkspace'
-import { api } from './api'
+import { api, networkApi } from './api'
+import NetworkView from './components/network/NetworkView'
+import { PublishDialog } from './components/network/dialogs'
+import { pathForRoute, routeFromPath } from './network'
+import type { Me, NetworkRoute, WorkSummary } from './network'
 import RoutingEditor from './components/RoutingEditor'
 import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './components/SourceProvenance'
 import { isPaper, sourceOrigin } from './sources'
@@ -138,19 +147,6 @@ const toSource = (s: BackendSource, fallbackRelevance = 85): Source => ({
   paper: s.paper,
   fulltext: s.fulltext,
 })
-
-function Logo({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="brand" aria-label="NemoSearch">
-      <svg className="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-        <path d="M6 24V8l20 16V8" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="6" cy="8" r="2.2" fill="currentColor" />
-        <circle cx="26" cy="24" r="2.2" fill="currentColor" />
-      </svg>
-      {!compact && <span>NemoSearch<span className="brand-dot">.</span></span>}
-    </div>
-  )
-}
 
 function IconButton({ label, children, onClick, className = '' }: { label: string; children: ReactNode; onClick: () => void; className?: string }) {
   return <button type="button" className={`icon-button ${className}`} aria-label={label} title={label} onClick={onClick}>{children}</button>
@@ -417,8 +413,18 @@ function RenderReportBody({
   return <article className="report-article">{blocks.map(renderBlock)}</article>
 }
 
-export default function App() {
-  const [view, setView] = useState<View>('home')
+interface AppProps {
+  me: Me
+  orcidBase: string
+  /** Reloads the account (badge counts, organizations) */
+  refreshMe: () => void
+}
+
+export default function App({ me, orcidBase, refreshMe }: AppProps) {
+  const [view, setView] = useState<View>(() => (routeFromPath(window.location.pathname) ? 'network' : 'home'))
+  const [networkRoute, setNetworkRoute] = useState<NetworkRoute>(() => routeFromPath(window.location.pathname) ?? { page: 'discover' })
+  const [publishing, setPublishing] = useState<{ reportId?: string } | null>(null)
+  const [relatedWorks, setRelatedWorks] = useState<WorkSummary[]>([])
   const [query, setQuery] = useState('')
   const [submittedQuery, setSubmittedQuery] = useState(SAMPLE_QUERY)
   const [focusMode] = useState<FocusMode>('web')
@@ -586,6 +592,18 @@ export default function App() {
   useEffect(() => () => window.clearTimeout(toastTimer.current), [])
 
   useEffect(() => {
+    if (view !== 'report' || !isLiveRun || !submittedQuery) return
+    let cancelled = false
+    networkApi
+      .related(submittedQuery)
+      .then((works) => !cancelled && setRelatedWorks(works.filter((w) => w.owner?.id !== me.id)))
+      .catch(() => !cancelled && setRelatedWorks([]))
+    return () => {
+      cancelled = true
+    }
+  }, [view, isLiveRun, submittedQuery, me.id])
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000)
     return () => window.clearInterval(timer)
   }, [])
@@ -630,7 +648,34 @@ export default function App() {
     setWorkspaceKey((key) => key + 1)
   }
 
+  // Network pages have real addresses so works and profiles can be shared; the rest of the app lives at /
+  const navigateNetwork = (route: NetworkRoute) => {
+    const path = pathForRoute(route)
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    setNetworkRoute(route)
+    setView('network')
+    setSidebarOpen(false)
+    window.scrollTo(0, 0)
+  }
+
+  useEffect(() => {
+    const onPop = () => {
+      const route = routeFromPath(window.location.pathname)
+      if (route) {
+        setNetworkRoute(route)
+        setView('network')
+      } else setView((current) => (current === 'network' ? 'home' : current))
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  useEffect(() => {
+    if (view !== 'network' && window.location.pathname.startsWith('/network')) window.history.pushState(null, '', '/')
+  }, [view])
+
   const navigate = (nextView: View) => {
+    if (nextView === 'network') return navigateNetwork(networkRoute)
     if (nextView === 'home' && view !== 'home') setTopicIndex((i) => i + 1)
     setView(nextView)
     setSidebarOpen(false)
@@ -1044,7 +1089,23 @@ export default function App() {
     )
   }
 
-  const projectActions = (project: Project) => [
+  const leaveProject = async (project: Project) => {
+    try {
+      await api.removeMember(project.id, me.id)
+      setProjects((prev) => prev.filter((p) => p.id !== project.id))
+      setLibraryReports((prev) => prev.filter((r) => r.projectId !== project.id || r.mine !== false))
+      if (scope === project.id) setScope('all')
+      if (runProject === project.id) setRunProject('')
+      notify(`You left “${project.name}”. Research you added to it stays in your Library.`)
+      loadHistory()
+    } catch (e) {
+      notify(`Couldn't leave “${project.name}”: ${(e as Error).message}`, undefined, 'error')
+    }
+  }
+
+  const projectActions = (project: Project) => project.role === 'member' ? [
+    { label: 'Leave project', icon: LogOut, onSelect: () => leaveProject(project) },
+  ] : [
     { label: 'Rename', icon: Pencil, onSelect: () => openProjectDialog({ mode: 'rename', project }) },
     project.archived
       ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveProject(project, false) }
@@ -1107,14 +1168,21 @@ export default function App() {
       notify(`The ${kind === 'pdf' ? 'PDF' : 'outline'} export wasn't recorded in your history.`, undefined, 'error')
     )
 
-  const reportActions = (report: SavedReport, place: 'sidebar' | 'library') => [
+  // Research a collaborator ran in a shared project can be copied, but only they or the project owner change it
+  const canManage = (report: SavedReport) =>
+    report.mine !== false || projects.find((p) => p.id === report.projectId)?.role === 'owner'
+
+  const reportActions = (report: SavedReport, place: 'sidebar' | 'library') => canManage(report) ? [
     { label: 'Rename', icon: Pencil, onSelect: () => setRenaming({ id: report.id, place }) },
     { label: 'Duplicate', icon: CopyPlus, onSelect: () => duplicateReport(report) },
+    ...(report.mine !== false && report.hasReport !== false
+      ? [{ label: 'Publish to Network', icon: Upload, onSelect: () => setPublishing({ reportId: report.id }) }]
+      : []),
     report.archived
       ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
       : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) },
     { label: 'Delete', icon: Trash2, onSelect: () => deleteReport(report), separated: true },
-  ]
+  ] : [{ label: 'Duplicate to my research', icon: CopyPlus, onSelect: () => duplicateReport(report) }]
 
   const renameInput = (report: SavedReport, className: string) => (
     <input
@@ -1410,6 +1478,7 @@ export default function App() {
             {activeProjects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
+                {p.role === 'member' ? ` (shared by ${p.owner?.name ?? 'a collaborator'})` : ''}
               </option>
             ))}
           </optgroup>
@@ -1459,7 +1528,11 @@ export default function App() {
           ) : (
             <button type="button" className="report-open" onClick={() => openReport(report)}>
               <strong>{report.title}</strong>
-              {report.question && report.question !== report.title && <small>{report.question}</small>}
+              {report.mine === false ? (
+                <small>Run by {report.ownerName || 'a collaborator'}</small>
+              ) : (
+                report.question && report.question !== report.title && <small>{report.question}</small>
+              )}
             </button>
           )}
         </span>
@@ -1552,6 +1625,19 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={view === 'network' ? 'active' : ''}
+            onClick={() => navigate('network')}
+            title="Network"
+          >
+            <NetworkIcon size={17} /> <span className="nav-label">Network</span>
+            {me.pendingRequests + me.unreadNotifications > 0 && (
+              <span className="nav-badge" aria-label={`${me.pendingRequests + me.unreadNotifications} new`}>
+                {me.pendingRequests + me.unreadNotifications}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             className={view === 'studio' ? 'active' : ''}
             onClick={() => navigate('studio')}
             title="Paper Studio (In-App LaTeX Engine)"
@@ -1632,10 +1718,29 @@ export default function App() {
           </nav>
         )}
         <div className="sidebar-profile">
-          <span className="workspace-avatar">NS</span>
+          <span className="workspace-avatar" aria-hidden="true">
+            {me.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'NS'}
+          </span>
           <span className="nav-label">
-            <strong>NemoSearch</strong>
-            <small>{healthStatus.ok ? 'Nebius AI Cloud · Live' : 'Interactive preview'}</small>
+            <strong>{me.name}</strong>
+            <small title={healthStatus.ok ? 'Nebius AI Cloud · Live' : 'Interactive preview'}>ORCID {me.orcid}</small>
+          </span>
+          <span className="nav-label sidebar-account-menu">
+            <ItemMenu
+              label="Account"
+              actions={[
+                { label: 'Your profile', icon: UserRound, onSelect: () => navigateNetwork({ page: 'profile' }) },
+                { label: 'Download your data', icon: Download, onSelect: () => window.location.assign('/api/me/export') },
+                {
+                  label: 'Sign out',
+                  icon: LogOut,
+                  separated: true,
+                  onSelect: () => {
+                    api.logout().finally(() => window.location.assign('/'))
+                  },
+                },
+              ]}
+            />
           </span>
         </div>
       </aside>
@@ -1913,6 +2018,11 @@ export default function App() {
                   <button type="button" onClick={shareReport}>
                     <Share2 size={16} /> Share
                   </button>
+                  {activeReport && activeReport.mine !== false && liveReport && (
+                    <button type="button" onClick={() => setPublishing({ reportId: activeReport.id })} title="Publish this report to NemoSearch Network">
+                      <Upload size={16} /> Publish
+                    </button>
+                  )}
                 </div>
               </div>
               {!isSampleReport && <CoverageNotice coverage={coverageForNotice} />}
@@ -2044,6 +2154,28 @@ export default function App() {
                     <button type="button" className="view-all-sources" onClick={() => setReportTab('sources')}>
                       View evidence details <ArrowRight size={15} />
                     </button>
+                    {isLiveRun && relatedWorks.length > 0 && (
+                      <div className="related-works">
+                        <div className="run-list-heading">
+                          <span className="section-label">On Network</span>
+                          <span>Researchers working on this</span>
+                        </div>
+                        {relatedWorks.slice(0, 3).map((w) => (
+                          <button type="button" className="source-rail-item" key={w.id} onClick={() => navigateNetwork({ page: 'work', id: w.id })}>
+                            <span className="source-number">
+                              <NetworkIcon size={12} aria-hidden="true" />
+                            </span>
+                            <span>
+                              <strong>{w.title}</strong>
+                              <small>
+                                {w.owner?.name}
+                                {w.owner?.affiliation && ` · ${w.owner.affiliation}`}
+                              </small>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </aside>
                 </div>
               ) : reportTab === 'sources' ? (
@@ -2149,7 +2281,11 @@ export default function App() {
             <section className="library-view">
               <div className="page-heading">
                 <div>
-                  {scopeProject && <div className="section-label">{scopeProject.archived ? 'Archived project' : 'Project'}</div>}
+                  {scopeProject && (
+                    <div className="section-label">
+                      {scopeProject.archived ? 'Archived project' : scopeProject.role === 'member' ? `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}` : 'Project'}
+                    </div>
+                  )}
                   {scopeProject ? (
                     <>
                       <h1 className="project-title">{scopeProject.name}</h1>
@@ -2168,7 +2304,7 @@ export default function App() {
                 )}
               </div>
               <p className="library-storage">
-                Your research runs, saved sources and files, stored on this NemoSearch server.
+                Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
               </p>
               <div className="library-toolbar">
               {scopeSelect('library-scope', 'scope-select library-scope')}
@@ -2221,10 +2357,35 @@ export default function App() {
                   </div>
                 )}
                 {scope !== 'all' && (
-                  <ProjectWorkspace key={scope} scope={scope} refreshKey={workspaceKey} notify={notify} onChanged={refreshProjects} />
+                  <ProjectWorkspace key={scope} scope={scope} refreshKey={workspaceKey} notify={notify} onChanged={refreshProjects} meId={me.id} />
                 )}
               </div>
             </section>
+          )}
+
+          {view === 'network' && (
+            <NetworkView
+              route={networkRoute}
+              onPublish={() => setPublishing({})}
+              ctx={{
+                me,
+                navigate: navigateNetwork,
+                notify,
+                refreshMe: () => {
+                  refreshMe()
+                  refreshProjects()
+                },
+                projects,
+                reports: libraryReports,
+                openProject: (projectId) => {
+                  refreshProjects()
+                  loadHistory()
+                  changeScope(projectId)
+                  navigate('library')
+                },
+                orcidBase,
+              }}
+            />
           )}
 
           {view === 'studio' && (
@@ -2358,6 +2519,20 @@ export default function App() {
           initialDescription={projectDialog.project?.description}
           onCancel={closeDialogs}
           onSubmit={submitProjectDialog}
+        />
+      )}
+      {publishing && (
+        <PublishDialog
+          me={me}
+          reports={libraryReports}
+          initialReportId={publishing.reportId}
+          onCancel={() => setPublishing(null)}
+          onDone={(work, uploadError) => {
+            setPublishing(null)
+            if (uploadError) notify(`Created “${work.title}”, but the file didn't upload: ${uploadError}`, undefined, 'error')
+            else notify(`Created “${work.title}”. It's private until you change its visibility.`)
+            navigateNetwork({ page: 'work', id: work.id })
+          }}
         />
       )}
       {deletingProject && <DeleteProjectDialog project={deletingProject} onCancel={closeDialogs} onConfirm={confirmDeleteProject} />}

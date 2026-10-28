@@ -1,4 +1,8 @@
-"""Smoke test: stream one research run and print a compact event summary."""
+"""Smoke test: stream one research run and print a compact event summary.
+
+Research needs an account, so this signs in with the development login: run the server locally with
+AUTH_DEV_LOGIN=1.
+"""
 import json
 import sys
 
@@ -10,7 +14,11 @@ q = sys.argv[1] if len(sys.argv) > 1 else "How do mixture of experts models work
 depth = sys.argv[2] if len(sys.argv) > 2 else "quick"
 counts: dict[str, int] = {}
 report = ""
-with httpx.stream("GET", "http://127.0.0.1:8000/api/research", params={"q": q, "depth": depth}, timeout=600) as r:
+client = httpx.Client(base_url="http://127.0.0.1:8000", timeout=600)
+signed_in = client.post("/api/auth/dev-login", json={"name": "Smoke Test"})
+if signed_in.status_code != 200:
+    sys.exit("Couldn't sign in: start the server with AUTH_DEV_LOGIN=1 (local only).")
+with client.stream("GET", "/api/research", params={"q": q, "depth": depth}) as r:
     for line in r.iter_lines():
         if not line.startswith("data: "):
             continue
