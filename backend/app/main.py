@@ -208,6 +208,8 @@ def research(
                                 for s in ev.get("sources", {}).values()
                             ],
                             "models": models, "coverage": ev.get("coverage") or {}, "createdAt": int(time.time() * 1000),
+                            # Research in a project belongs to it; anything else waits for the user to save it
+                            "saved": bool(project),
                         }, project)
                         yield f"data: {json.dumps({'type': 'saved', 'report': {k: v for k, v in saved.items() if k not in ('reportText', 'reasoningTrace', 'sourcesData')}})}\n\n"
                     except Exception as e:  # noqa: BLE001
@@ -295,6 +297,7 @@ class ProjectPatch(BaseModel):
 class ReportPatch(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    saved: Optional[bool] = None
     projectId: Optional[str] = None
     moveProject: bool = False
 

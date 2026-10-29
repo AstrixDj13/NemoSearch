@@ -10,6 +10,7 @@ import {
   BookOpen,
   Bookmark,
   BookmarkCheck,
+  BookmarkX,
   BrainCircuit,
   ChartNoAxesCombined,
   Check,
@@ -987,14 +988,28 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-report-id="${id}"] .report-open`)?.focus())
 
   // Optimistic update on the server; restores the previous values and reports the error if it fails
-  const patchReport = (report: SavedReport, patch: { title?: string; archived?: boolean }) => {
+  const patchReport = (report: SavedReport, patch: { title?: string; archived?: boolean; saved?: boolean }) => {
     updateReport(report.id, patch)
     return api.updateReport(report.id, patch).catch((e: Error) => {
-      updateReport(report.id, { title: report.title, archived: report.archived })
+      updateReport(report.id, { title: report.title, archived: report.archived, saved: report.saved })
       notify(`Couldn't update “${report.title}”: ${e.message}`, undefined, 'error')
       throw e
     })
   }
+
+  // Research outside a project only joins the Library when saved; in a project it always belongs there
+  const canSave = (report: SavedReport) => report.mine !== false && !report.projectId && report.hasReport !== false
+
+  const setSaved = (report: SavedReport, saved: boolean) =>
+    // Removed research leaves the Library entirely, archive included, and goes back to Recent research
+    patchReport(report, saved ? { saved } : { saved, archived: false })
+      .then(() =>
+        notify(
+          saved ? `Saved “${report.title}” to your Library.` : `Removed “${report.title}” from your Library. It stays in Recent research.`,
+          saved ? { label: 'Open Library', run: () => { changeScope('all'); navigate('library') } } : undefined
+        )
+      )
+      .catch(() => undefined)
 
   const finishRename = (report: SavedReport, value: string | null) => {
     const title = value?.trim().replace(/\s+/g, ' ')
@@ -1209,14 +1224,22 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     report.mine !== false || projects.find((p) => p.id === report.projectId)?.role === 'owner'
 
   const reportActions = (report: SavedReport, place: 'sidebar' | 'library') => canManage(report) ? [
+    ...(canSave(report)
+      ? [report.saved === false
+          ? { label: 'Add to my Library', icon: Bookmark, onSelect: () => setSaved(report, true) }
+          : { label: 'Remove from Library', icon: BookmarkX, onSelect: () => setSaved(report, false) }]
+      : []),
     { label: 'Rename', icon: Pencil, onSelect: () => setRenaming({ id: report.id, place }) },
     { label: 'Duplicate', icon: CopyPlus, onSelect: () => duplicateReport(report) },
     ...(report.mine !== false && report.hasReport !== false
       ? [{ label: 'Publish to Network', icon: Upload, onSelect: () => setPublishing({ reportId: report.id }) }]
       : []),
-    report.archived
-      ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
-      : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) },
+    // Archiving belongs to the Library; unsaved research isn't in it yet
+    ...(report.saved === false
+      ? []
+      : [report.archived
+          ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
+          : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) }]),
     { label: 'Delete', icon: Trash2, onSelect: () => deleteReport(report), separated: true },
   ] : [{ label: 'Duplicate to my research', icon: CopyPlus, onSelect: () => duplicateReport(report) }]
 
@@ -1577,8 +1600,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const runNumber = runNumbers(visibleReports)
   const matchesFilter = (report: SavedReport) =>
     `${report.title} ${report.question ?? ''}`.toLowerCase().includes(libraryFilter.toLowerCase())
-  const filteredReports = visibleReports.filter(matchesFilter)
-  const filteredArchived = archivedReports.filter(matchesFilter)
+  // The Library lists saved research; unsaved runs stay in Recent research until saved
+  const inLibrary = (r: SavedReport) => r.saved !== false
+  const filteredReports = visibleReports.filter(inLibrary).filter(matchesFilter)
+  const libraryArchived = archivedReports.filter(inLibrary)
+  const filteredArchived = libraryArchived.filter(matchesFilter)
   // Paper Studio Overleaf file tree state in left sidebar
   const [studioActiveFile, setStudioActiveFile] = useState<string>('main.tex')
 
@@ -2019,7 +2045,21 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   Research brief / {focusOptions.find((option) => option.id === focusMode)?.label}
                   {isSampleReport && ' · Sample with preview data'}
                 </div>
-                <h1>{submittedQuery}</h1>
+                <div className="report-title-row">
+                  <h1>{submittedQuery}</h1>
+                  {isLiveRun && activeReport && canSave(activeReport) && (
+                    <button
+                      type="button"
+                      className={`secondary-button report-save ${activeReport.saved === false ? '' : 'saved'}`}
+                      aria-pressed={activeReport.saved !== false}
+                      onClick={() => setSaved(activeReport, activeReport.saved === false)}
+                      title={activeReport.saved === false ? 'Save to your Library' : 'Saved in your Library. Click to remove it.'}
+                    >
+                      {activeReport.saved === false ? <Bookmark size={16} aria-hidden="true" /> : <BookmarkCheck size={16} aria-hidden="true" />}
+                      {activeReport.saved === false ? 'Save' : 'Saved'}
+                    </button>
+                  )}
+                </div>
                 {/* Stats and actions share one wrapping row; the actions drop below when the row is too narrow */}
                 <div className="report-title-foot">
                   <div className="report-meta">
@@ -2448,10 +2488,14 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 {filteredReports.map((report, index) => libraryRow(report, index))}
                 {filteredReports.length === 0 && (
                   <div className="library-empty">
-                    {libraryFilter ? `No research matches “${libraryFilter}”.` : 'No research yet. Start a run to build your library.'}
+                    {libraryFilter
+                      ? `No research matches “${libraryFilter}”.`
+                      : scopeProject
+                        ? 'No research in this project yet.'
+                        : 'Nothing saved yet. Use Save on a report, or “Add to my Library” in Recent research, to keep it here.'}
                   </div>
                 )}
-                {archivedReports.length > 0 && (
+                {libraryArchived.length > 0 && (
                   <div className="library-archived">
                     <button
                       type="button"
@@ -2460,7 +2504,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                       aria-controls="library-archived-list"
                       onClick={() => setShowArchived(!showArchived)}
                     >
-                      <Archive size={15} aria-hidden="true" /> Archived · {archivedReports.length}
+                      <Archive size={15} aria-hidden="true" /> Archived · {libraryArchived.length}
                       <ChevronDown size={14} aria-hidden="true" className={showArchived ? 'flipped' : ''} />
                     </button>
                     {showArchived && (

@@ -104,6 +104,8 @@ export interface SavedReport {
   /** Epoch ms; older saved reports only have the static `time` label */
   createdAt?: number
   archived?: boolean
+  /** False for research outside a project that hasn't been saved: it shows in Recent research but not the Library */
+  saved?: boolean
   /** Owning project; null or absent means Unassigned */
   projectId?: string | null
   /** False for placeholder entries that have no stored report body */

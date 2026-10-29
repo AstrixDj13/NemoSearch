@@ -69,7 +69,7 @@ export const api = {
   listReports: (project = 'all') => request<SavedReport[]>(`/api/reports?project=${encodeURIComponent(project)}`),
   getReport: (id: string) => request<SavedReport>(`/api/reports/${id}`),
   importReports: (reports: SavedReport[]) => request<{ imported: number }>('/api/reports/import', json('POST', reports)),
-  updateReport: (id: string, patch: { title?: string; archived?: boolean }) =>
+  updateReport: (id: string, patch: { title?: string; archived?: boolean; saved?: boolean }) =>
     request<SavedReport>(`/api/reports/${id}`, json('PATCH', patch)),
   duplicateReport: (id: string) => request<SavedReport>(`/api/reports/${id}/duplicate`, json('POST')),
   deleteReport: (id: string) => request<{ ok: boolean }>(`/api/reports/${id}`, json('DELETE')),

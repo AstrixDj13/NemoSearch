@@ -329,8 +329,8 @@ class Store:
         return {
             "id": row.id, "projectId": row.project_id, "title": row.title, "question": row.question,
             "mode": row.mode, "time": row.time_label, "sources": row.sources_count,
-            "archived": bool(row.archived), "createdAt": row.created_at, "hasReport": bool(row.report_text),
-            "mine": row.owner_id == uid, "ownerName": owner_names.get(row.owner_id, ""),
+            "archived": bool(row.archived), "saved": bool(row.saved), "createdAt": row.created_at,
+            "hasReport": bool(row.report_text), "mine": row.owner_id == uid, "ownerName": owner_names.get(row.owner_id, ""),
         }
 
     def _names(self, conn: sa.Connection, ids: set[str]) -> dict[str, str]:
@@ -376,7 +376,8 @@ class Store:
             "reasoning": str(report.get("reasoningTrace") or ""),
             "models_json": json.dumps(report.get("models") or {}), "coverage_json": json.dumps(report.get("coverage") or {}),
             "followups_json": json.dumps(report.get("followups") or []),
-            "archived": bool(report.get("archived")), "created_at": report.get("createdAt"),
+            "archived": bool(report.get("archived")), "saved": bool(report.get("saved", True)),
+            "created_at": report.get("createdAt"),
         }
 
     def save_report(self, uid: str, report: dict, project_id: Optional[str] = None) -> dict:
@@ -403,11 +404,15 @@ class Store:
                 fields["title"] = str(patch["title"]).strip()[:200]
             if patch.get("archived") is not None:
                 fields["archived"] = bool(patch["archived"])
+            if patch.get("saved") is not None:
+                fields["saved"] = bool(patch["saved"])
             if "projectId" in patch:
                 target = patch["projectId"]
                 if target and self._role(conn, uid, target) is None:
                     raise NotFound(target)
                 fields["project_id"] = target or None
+                if target:
+                    fields["saved"] = True  # research in a project is part of it, and so of the Library
             if fields:
                 conn.execute(reports.update().where(reports.c.id == report_id).values(**fields))
             row = conn.execute(sa.select(reports).where(reports.c.id == report_id)).one()
