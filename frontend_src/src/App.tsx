@@ -2320,9 +2320,10 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
             <section className="library-view">
               <div className="page-heading">
                 <div>
-                  {scopeProject && (
+                  {/* Only status worth stating gets a label above the title; a plain project has none */}
+                  {scopeProject && (scopeProject.archived || scopeProject.role === 'member') && (
                     <div className="section-label">
-                      {scopeProject.archived ? 'Archived project' : scopeProject.role === 'member' ? `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}` : 'Project'}
+                      {scopeProject.archived ? 'Archived project' : `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}`}
                     </div>
                   )}
                   {scopeProject ? (

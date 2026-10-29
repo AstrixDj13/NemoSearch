@@ -240,7 +240,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @media (min-width: 761px) { .report-table-wrap { overflow: visible; } }
 .report-article table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.5; }
 .report-article th, .report-article td { padding: 9px 10px; border-bottom: 1px solid oklch(0.9 0.004 260); text-align: left; vertical-align: top; }
-.report-article th { color: var(--ink-100); font-weight: 600; white-space: nowrap; }
+.report-article th { color: var(--ink-100); font-weight: 600; }
+/* Long links and code would otherwise set a minimum width wider than the column and push into the sources rail */
+.report-article a, .report-article code { overflow-wrap: anywhere; }
+.report-article p, .report-article li { overflow-wrap: break-word; }
 .answer-summary { padding: 0 0 28px; border-bottom: 1px solid var(--ink-100); }
 .answer-summary p { margin: 12px 0 0; color: var(--ink-100); font-size: 18px; line-height: 1.6; letter-spacing: -.012em; }
 /* Citations sit inside the line box so cited sentences keep even line spacing */
@@ -279,12 +282,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 /* Only the send button: citations inside answers keep their own small style */
 .follow-up-input button { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border: 0; border-radius: 10px; background: var(--ink-100); color: var(--paper); }
 .follow-up-input button:disabled { opacity: .35; }
-.follow-up-thread { display: grid; gap: 22px; margin: 0 0 18px; padding: 0; list-style: none; }
-.follow-up-turn { display: grid; gap: 10px; }
+/* minmax(0, 1fr): a turn never grows past the column, whatever its content's minimum width */
+.follow-up-thread { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; margin: 0 0 18px; padding: 0; list-style: none; }
+.follow-up-turn { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .follow-up-question { justify-self: end; max-width: 80%; display: grid; gap: 4px; margin: 0; padding: 10px 14px; border: 1px solid var(--hairline); border-radius: 12px 12px 4px 12px; background: var(--paper); font-size: 14px; line-height: 1.5; }
 .follow-up-note { color: var(--muted-text); font-style: italic; }
 .follow-up-note.error { color: var(--ink-100); font-style: normal; font-weight: 500; }
-.follow-up-response { padding: 16px; border-left: 1px solid var(--ink-100); background: oklch(0.97 0.003 260); }
+.follow-up-response { min-width: 0; padding: 16px; border-left: 1px solid var(--ink-100); background: oklch(0.97 0.003 260); }
 .follow-up-response p { margin: 8px 0 0; font-size: 13px; line-height: 1.6; }
 .follow-up-response .report-article { max-width: none; margin-top: 8px; }
 .follow-up-response .report-article p, .follow-up-response .report-list { margin: 0 0 10px; font-size: 14px; line-height: 1.65; }

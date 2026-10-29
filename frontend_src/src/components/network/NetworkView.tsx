@@ -27,7 +27,6 @@ export default function NetworkView({ ctx, route, onPublish }: { ctx: NetworkCon
     <section className="library-view network-view">
       <div className="page-heading">
         <div>
-          <div className="section-label">Public research network</div>
           <h1>Network</h1>
         </div>
         {me && (
