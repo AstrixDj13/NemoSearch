@@ -73,6 +73,8 @@ projects = sa.Table(
     sa.Column("archived", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("created_at", ms, nullable=False),
     sa.Column("updated_at", ms, nullable=False),
+    # The Network work a collaboration project was opened for (a plain id: the work may be deleted later)
+    sa.Column("work_id", sa.String(40)),
 )
 
 # People a project is shared with. The owner is not listed here; members can read everything in the project
@@ -347,7 +349,7 @@ def create_db_engine(url: str) -> sa.Engine:
 
 
 # Columns added after a table first shipped: (table, column, DDL type). create_all never alters existing tables.
-_ADDED_COLUMNS = [("works", "claim_evidence", "TEXT")]
+_ADDED_COLUMNS = [("works", "claim_evidence", "TEXT"), ("projects", "work_id", "VARCHAR(40)")]
 
 
 def init_schema(engine: sa.Engine) -> None:
@@ -357,6 +359,11 @@ def init_schema(engine: sa.Engine) -> None:
         for table, column, ddl in _ADDED_COLUMNS:
             if column not in {c["name"] for c in existing.get_columns(table)}:
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        # Collaboration projects opened before projects recorded their work: take it from the accepted request
+        conn.exec_driver_sql(
+            "UPDATE projects SET work_id = (SELECT r.work_id FROM access_requests r WHERE r.project_id = projects.id "
+            "AND r.status = 'accepted' AND r.kind = 'collaborate' ORDER BY r.decided_at LIMIT 1) WHERE work_id IS NULL"
+        )
     with engine.begin() as conn:
         if engine.dialect.name == "postgresql":
             conn.exec_driver_sql(_PG_IMMUTABLE)

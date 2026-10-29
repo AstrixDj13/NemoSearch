@@ -51,7 +51,7 @@ async def plan(llm: LLM, stats: RunStats, question: str, n: int, provider: str =
 
     def mock() -> str:
         import json
-        q = question.rstrip("?")
+        q = question.split("\n\nPROJECT CONTEXT", 1)[0].rstrip("?")
         qs = [q, f"{q} recent developments", f"{q} evidence and statistics",
               f"{q} criticism and limitations", f"{q} future outlook"][:n]
         return json.dumps({"angle": "Survey background, then weigh recent evidence against known limitations.", "sub_queries": qs})
@@ -190,9 +190,21 @@ def _mock_report(question: str, sources: dict[int, dict], notes: list[dict], gap
 
 
 # ---------------------------------------------------------------- orchestrator
+def with_context(question: str, context: str | None) -> str:
+    """The question as the agents see it: with the project it belongs to, so references like "this topic" or
+    "the paper" resolve. The context explains the question; it is never evidence."""
+    if not context:
+        return question
+    return (
+        f"{question}\n\nPROJECT CONTEXT (the user asked this while working in the project below. Use it only to "
+        f"understand what the question refers to, e.g. 'this topic' or 'the paper'. It is not evidence: never cite "
+        f"it or treat its claims as findings.)\n{context}"
+    )
+
+
 async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: Search,
                        models: dict | None = None, provider: str | None = None,
-                       scholarly: Scholarly | None = None) -> AsyncIterator[dict]:
+                       scholarly: Scholarly | None = None, context: dict | None = None) -> AsyncIterator[dict]:
     t_start = time.perf_counter()
     stats = RunStats()
     deep = depth == "deep"
@@ -205,6 +217,8 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     if provider and search.resolve_provider(provider) != provider:
         notices.append(f"Search provider {provider} is unavailable; using {search.provider} instead.")
     provider = search.resolve_provider(provider)
+    asked = question
+    question = with_context(question, (context or {}).get("text"))
     academic, academic_reason = academic_intent(question, focus) if scholarly else (False, "")
     connector_labels = {c.name: c.label for c in scholarly.connectors} if scholarly else {}
     web_log: list[dict] = []
@@ -217,12 +231,14 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
         return ev
 
     yield {
-        "type": "init", "question": question, "depth": depth, "focus": focus,
+        "type": "init", "question": asked, "depth": depth, "focus": focus,
         "mock": llm.mock, "models": step_models, "search_provider": provider,
         "scholarly": {"enabled": academic, "reason": academic_reason, "connectors": list(connector_labels.values())},
     }
     for message in notices:
         yield {"type": "notice", "message": message}
+    if context:
+        yield {"type": "context", "project": context.get("project"), "work": context.get("work")}
 
     # 1. PLAN -----------------------------------------------------------
     yield stage("planner", "running", f"Decomposing question for {focus.upper()} focus", "planner")
@@ -379,7 +395,7 @@ async def run_pipeline(question: str, depth: str, focus: str, llm: LLM, search: 
     written = ""
     async for kind, delta in llm.stream(
         "ultra", [{"role": "system", "content": sys}, {"role": "user", "content": user}], stats,
-        mock=lambda: _mock_report(question, sources, evidence, c["gaps"]), model=step_models["writer"],
+        mock=lambda: _mock_report(asked, sources, evidence, c["gaps"]), model=step_models["writer"],
     ):
         if first_token is None:
             first_token = time.perf_counter() - t_w

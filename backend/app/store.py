@@ -25,6 +25,7 @@ from . import notify
 from .blobs import BlobStore
 from .db import (
     attachments, exports, new_id, now_ms, paper_templates, project_members, projects, reports, saved_sources, users,
+    work_access, works,
 )
 from .errors import Forbidden, Invalid, NotFound, consume
 
@@ -93,6 +94,31 @@ class Store:
         with self.engine.connect() as conn:
             return self._accessible(conn, uid, project_id)
 
+    def project_context(self, uid: str, project_id: Optional[str]) -> Optional[dict]:
+        """What the research agents should know about the project a run belongs to, or None when there is nothing
+        useful (an empty project) or the account cannot see it."""
+        with self.engine.connect() as conn:
+            if self._role(conn, uid, project_id) is None:
+                return None
+            row = conn.execute(sa.select(projects).where(projects.c.id == project_id)).one()
+            work = self._project_work(conn, uid, row.work_id)
+        parts = [f"Project: {row.name}"]
+        if row.description.strip() and not (work and row.description.startswith("Shared through NemoSearch Network")):
+            parts.append(f"Project description: {row.description.strip()}")
+        if work:
+            authors = ", ".join(work["authors"][:8]) + (" et al." if len(work["authors"]) > 8 else "")
+            parts.append(f"The project is a collaboration on the paper \"{work['title']}\"" + (f" by {authors}" if authors else "")
+                         + (f" (DOI {work['doi']})" if work["doi"] else "") + ".")
+            if work["abstract"].strip():
+                parts.append(f"Paper abstract: {work['abstract'].strip()[:1500]}")
+            if work["tags"]:
+                parts.append(f"Paper topics: {', '.join(work['tags'])}")
+        if row.notes.strip():
+            parts.append(f"Project notes: {row.notes.strip()[:1500]}")
+        if len(parts) == 1 and not row.name.strip():
+            return None
+        return {"project": row.name, "work": work["title"] if work else None, "text": "\n".join(parts)}
+
     def can_read_report(self, uid: str, report_id: str) -> bool:
         with self.engine.connect() as conn:
             try:
@@ -102,6 +128,21 @@ class Store:
                 return False
 
     # ------------------------------------------------------------------ projects
+    @staticmethod
+    def _project_work(conn: sa.Connection, uid: str, work_id: Optional[str]) -> Optional[dict]:
+        """The work a collaboration project is about, if this account may see it on the Network."""
+        if not work_id:
+            return None
+        w = conn.execute(sa.select(works).where(works.c.id == work_id)).first()
+        if w is None:
+            return None
+        granted = w.owner_id == uid or conn.execute(sa.select(work_access.c.user_id).where(
+            work_access.c.work_id == work_id, work_access.c.user_id == uid)).first() is not None
+        if not granted and (w.taken_down or w.visibility == "private"):
+            return None
+        return {"id": w.id, "title": w.title, "authors": json.loads(w.authors_json), "abstract": w.abstract,
+                "tags": json.loads(w.tags_json), "doi": w.doi}
+
     def _project_dict(self, conn: sa.Connection, row: sa.Row, uid: str) -> dict:
         def count(table: sa.Table, *extra) -> int:  # noqa: ANN002
             return conn.execute(sa.select(sa.func.count()).select_from(table).where(table.c.project_id == row.id, *extra)).scalar_one()
@@ -112,6 +153,7 @@ class Store:
             "archived": bool(row.archived), "createdAt": row.created_at, "updatedAt": row.updated_at,
             "role": "owner" if row.owner_id == uid else "member",
             "owner": {"id": owner.id, "name": owner.name, "orcid": owner.orcid} if owner else None,
+            "work": self._project_work(conn, uid, row.work_id),
             "counts": {
                 "reports": count(reports, reports.c.deleted.is_(False)),
                 "sources": count(saved_sources),

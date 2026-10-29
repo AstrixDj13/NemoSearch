@@ -495,12 +495,14 @@ class Network:
                         if conn.execute(sa.select(projects.c.owner_id).where(projects.c.id == project_id)).scalar() != uid:
                             raise Invalid("Choose one of your own projects to share.")
                         pid = project_id
+                        conn.execute(projects.update().where(projects.c.id == pid, projects.c.work_id.is_(None))
+                                     .values(work_id=work.id))
                     else:
                         pid, now = new_id("project"), now_ms()
                         conn.execute(projects.insert().values(
                             id=pid, owner_id=uid, name=f"Collaboration: {work.title}"[:120],
                             description=f"Shared through NemoSearch Network for “{work.title}”."[:500],
-                            notes="", archived=False, created_at=now, updated_at=now,
+                            notes="", archived=False, created_at=now, updated_at=now, work_id=work.id,
                         ))
                     Store.add_member_conn(conn, pid, req.requester_id, uid)
                     values["project_id"] = pid

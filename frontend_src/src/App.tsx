@@ -52,6 +52,7 @@ import DeleteProjectDialog from './components/DeleteProjectDialog'
 import ItemMenu from './components/ItemMenu'
 import ProjectDialog from './components/ProjectDialog'
 import ProjectWorkspace from './components/ProjectWorkspace'
+import CollaborationHeader from './components/CollaborationHeader'
 import { api, networkApi } from './api'
 import NetworkView from './components/network/NetworkView'
 import { PublishDialog } from './components/network/dialogs'
@@ -459,6 +460,9 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [liveSources, setLiveSources] = useState<Source[]>(sampleSources)
   const [runCoverage, setRunCoverage] = useState<RunCoverage | null>(null)
   const [runWarnings, setRunWarnings] = useState<string[]>([])
+  // Research in a project is given the project's paper, description and notes unless this is switched off
+  const [useProjectContext, setUseProjectContext] = useState(true)
+  const [runContext, setRunContext] = useState<{ project: string; work: string | null } | null>(null)
   const [liveReport, setLiveReport] = useState<string>('')
   const [liveReasoning, setLiveReasoning] = useState<string>('')
   const [liveStats, setLiveStats] = useState<{ elapsed?: number; ttft?: number; nSources?: number; gaps?: string[] }>({})
@@ -731,6 +735,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     setLiveSources([])
     setRunCoverage(null)
     setRunWarnings([])
+    setRunContext(null)
     setLiveSteps([
       { name: 'Planner', model: modelLabel(teamModels.planner), detail: 'Decomposing question into research paths...' },
       { name: 'Scout', model: modelLabel(teamModels.scout), detail: 'Preparing live search across primary sources...' },
@@ -746,7 +751,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
       depth: deepMode ? 'deep' : 'quick',
       focus: focusMode,
       title: makeTitle(cleanQuery),
-      ...(runProject ? { project_id: runProject } : {}),
+      ...(runProject ? { project_id: runProject, use_context: useProjectContext ? 'true' : 'false' } : {}),
       ...routingParams(teamModels, activeRouting.preset),
     })
     if (attachmentFile) {
@@ -878,6 +883,8 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
             setActiveReportId(saved.id)
             loadSavedSources(saved.projectId ?? null)
             refreshProjects()
+          } else if (data.type === 'context') {
+            setRunContext({ project: data.project, work: data.work ?? null })
           } else if (data.type === 'notice') {
             notify(data.message, undefined, 'error')
           } else if (data.type === 'warning') {
@@ -1861,6 +1868,25 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                           <option value="__new">New project…</option>
                         </select>
                       </label>
+                      {runProject && (
+                        <button
+                          type="button"
+                          aria-pressed={useProjectContext}
+                          aria-label="Use project context"
+                          title={
+                            useProjectContext
+                              ? "The agents read this project's paper, description and notes to understand your question."
+                              : 'The question is researched on its own, without the project.'
+                          }
+                          className={`deep-toggle ${useProjectContext ? 'enabled' : ''}`}
+                          onClick={() => setUseProjectContext(!useProjectContext)}
+                        >
+                          <span className="toggle-track">
+                            <span />
+                          </span>
+                          Context
+                        </button>
+                      )}
                       <button
                         type="button"
                         className={`routing-chip ${activeRouting.preset === 'balanced' && !nextRunRouting ? '' : 'changed'}`}
@@ -1893,6 +1919,16 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                       <LoaderCircle size={13} className="spin" /> Deep research in progress
                     </div>
                     <h1>{submittedQuery}</h1>
+                    {runContext && (
+                      <p className="run-context">
+                        Using context from <strong>{runContext.project}</strong>
+                        {runContext.work && (
+                          <>
+                            {' '}· paper “{runContext.work}”
+                          </>
+                        )}
+                      </p>
+                    )}
                   </div>
                   <span className="running-time">
                     <Clock3 size={15} /> {elapsedTime}s
@@ -2289,7 +2325,10 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   {scopeProject ? (
                     <>
                       <h1 className="project-title">{scopeProject.name}</h1>
-                      {scopeProject.description && <p className="project-description">{scopeProject.description}</p>}
+                      {/* A collaboration's header already says what it is about */}
+                      {scopeProject.description && !(scopeProject.work && scopeProject.description.startsWith('Shared through NemoSearch Network')) && (
+                        <p className="project-description">{scopeProject.description}</p>
+                      )}
                     </>
                   ) : scope === 'unassigned' ? (
                     <h1>Unassigned research</h1>
@@ -2303,6 +2342,18 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   </div>
                 )}
               </div>
+              {scopeProject?.work && (
+                <CollaborationHeader
+                  project={{ ...scopeProject, work: scopeProject.work }}
+                  onOpenWork={(id) => navigateNetwork({ page: 'work', id })}
+                  onResearch={() => {
+                    setRunProject(scopeProject.id)
+                    setUseProjectContext(true)
+                    setQuery(`What has been published on the topic of this paper since it came out, and what is still open?`)
+                    navigate('home')
+                  }}
+                />
+              )}
               <p className="library-storage">
                 Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
               </p>

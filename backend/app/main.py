@@ -173,10 +173,13 @@ def research(
     search_provider: Optional[str] = None,
     project_id: Optional[str] = None,
     title: Optional[str] = Query(None, max_length=200),
+    # Lets the agents read the project's paper, description and notes; off answers the question on its own
+    use_context: bool = True,
 ):
     _limit(user.id, "research", settings.limit_research_per_day, "research runs")
     overrides = {"planner": planner_model, "reader": reader_model, "critic": critic_model, "writer": writer_model}
     project = store.accessible_project(user.id, project_id)
+    context = store.project_context(user.id, project) if project and use_context else None
 
     async def gen():
         report, reasoning, models = "", "", {}
@@ -184,7 +187,7 @@ def research(
             if project_id and project is None:
                 notice = "That project no longer exists, so this research is saved to Unassigned."
                 yield f"data: {json.dumps({'type': 'notice', 'message': notice})}\n\n"
-            async for ev in run_pipeline(q.strip(), depth, focus, llm, search, overrides, search_provider, scholarly):
+            async for ev in run_pipeline(q.strip(), depth, focus, llm, search, overrides, search_provider, scholarly, context):
                 kind = ev.get("type")
                 if kind == "report":
                     report += ev["delta"]

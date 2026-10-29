@@ -234,6 +234,8 @@ export interface Project {
   /** 'member' when someone else shared the project with you */
   role: 'owner' | 'member'
   owner: { id: string; name: string; orcid: string | null } | null
+  /** For a collaboration project: the Network paper it was opened for (absent if you can't see that paper) */
+  work?: { id: string; title: string; authors: string[]; abstract: string; tags: string[]; doi: string | null } | null
   counts: { reports: number; sources: number; attachments: number; exports: number; members: number }
 }
 
