@@ -50,9 +50,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .primary-nav button { min-height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--muted-text); font-size: 14px; text-align: left; transition: background 180ms ease-out, color 180ms ease-out; }
 .primary-nav button:hover { background: oklch(0.965 0.003 260); color: var(--ink-100); }
 .primary-nav button.active { background: oklch(0.955 0.004 260); color: var(--ink-100); font-weight: 500; }
-.recent-scope { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; color: var(--muted-text); font-size: 12px; }
-.recent-scope span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent-scope .text-link { flex: none; }
 .sidebar > * { flex-shrink: 0; }
 /* Middle region: only the list scrolls, so the profile footer can stay in normal flow */
 .recent-block { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; margin-bottom: 12px; padding-top: 23px; }

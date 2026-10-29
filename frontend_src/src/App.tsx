@@ -511,6 +511,8 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
   const dialogOpener = useRef<HTMLElement | null>(null)
   const [activeReportId, setActiveReportId] = useState<string | null>(null)
+  // The Library page a report was opened from (which project, how far down), so the report can lead back to it
+  const [reportReturn, setReportReturn] = useState<{ scope: ResearchScope; scrollY: number } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; place: 'sidebar' | 'library' } | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [showArchivedProjects, setShowArchivedProjects] = useState(false)
@@ -764,6 +766,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
       { name: 'Critic', model: modelLabel(teamModels.critic), detail: 'Queued to verify coverage & close gaps...' },
       { name: 'Lead analyst', model: modelLabel(teamModels.writer), detail: 'Queued for rigorous cited synthesis...' },
     ])
+    setReportReturn(null) // a new run was not opened from the Library
     setView('running')
 
     // Connect to real FastAPI SSE endpoint
@@ -978,7 +981,26 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     setReportTab('brief')
     setThread((saved?.followups ?? []).map((turn) => ({ ...turn, status: 'done' as const })))
     setSidebarOpen(false)
+    // Opened from the Library: remember the page; from another report: keep where that one came from
+    const from = view === 'library' ? { scope, scrollY: window.scrollY } : null
+    setReportReturn((prev) => (view === 'report' ? prev : from))
     setView('report')
+    window.scrollTo(0, 0)
+  }
+
+  const backToLibrary = () => {
+    if (!reportReturn) return
+    const { scope: target, scrollY } = reportReturn
+    const reportId = activeReportId
+    changeScope(target)
+    setView('library')
+    // Once the Library has rendered: back to the same spot, with focus on the report you were reading
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        window.scrollTo(0, scrollY)
+        document.querySelector<HTMLElement>(`.library-list [data-report-id="${reportId}"] .report-open`)?.focus({ preventScroll: true })
+      })
+    )
   }
 
   const updateReport = (id: string, patch: Partial<SavedReport>) =>
@@ -1696,14 +1718,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 <FolderPlus size={15} aria-hidden="true" />
               </button>
             </div>
-            {scope !== 'all' && (
-              <p className="recent-scope">
-                <span>From {scopeProject?.name ?? 'Unassigned'}</span>
-                <button type="button" className="text-link" onClick={() => changeScope('all')}>
-                  Show all
-                </button>
-              </p>
-            )}
             <div className="recent-scroll">
               {historyStatus === 'loading' ? (
                 <p className="recent-empty">Loading your research…</p>
@@ -2039,6 +2053,13 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'report' && (
             <section className="report-view">
+              {reportReturn && (
+                <button type="button" className="library-back" onClick={backToLibrary}>
+                  <ArrowLeft size={15} aria-hidden="true" />{' '}
+                  {projects.find((p) => p.id === reportReturn.scope)?.name ??
+                    (reportReturn.scope === 'unassigned' ? 'Unassigned research' : 'Library')}
+                </button>
+              )}
               <div className="report-title-block">
                 {/* Only the sample report says anything extra up here: that its data is not real */}
                 <div className="section-label">
