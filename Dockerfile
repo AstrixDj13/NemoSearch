@@ -25,10 +25,10 @@ COPY backend ./backend
 COPY scripts ./scripts
 COPY --from=frontend-builder /build/frontend ./frontend
 
-# Create local data directory for SQLite / local blob fallback
-RUN mkdir -p /app/data
+# Create local data directory for SQLite / local blob fallback and make it writable for non-root UID 1000 (Hugging Face Spaces & Nebius)
+RUN mkdir -p /app/data/jobs /app/data/templates && chmod -R 777 /app/data
 
-EXPOSE 8000
+EXPOSE 8000 7860
 
 # Default entrypoint serves the web app & SSE API for Nebius Serverless Endpoints;
 # Nebius Serverless Jobs can override --container-command to run scripts/nebius_job_worker.py

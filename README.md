@@ -1,3 +1,15 @@
+---
+title: NemoSearch
+emoji: 🎓
+colorFrom: indigo
+colorTo: blue
+sdk: gradio
+sdk_version: "5.0.0"
+app_file: app.py
+app_port: 7860
+pinned: false
+---
+
 # 🛩️ NemoSearch: Autonomous Multi-Agent Deep Research on NVIDIA Nemotron
 
 > **Nebius × NVIDIA Global AI Hackathon · Track: Best Apps and Agents**  
