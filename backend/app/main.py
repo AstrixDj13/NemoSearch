@@ -317,6 +317,10 @@ class MemberAdd(BaseModel):
     orcid: str
 
 
+class MessageCreate(BaseModel):
+    body: str
+
+
 @app.get("/api/trending-topics")
 async def trending_topics():
     """Most-published research topics of the last 30 days (OpenAlex), for the home page's example question.
@@ -374,6 +378,16 @@ def projects_member_add(user: CurrentUser, project_id: str, body: MemberAdd):
 def projects_member_remove(user: CurrentUser, project_id: str, member_id: str):
     store.remove_member(user.id, project_id, member_id)
     return {"ok": True}
+
+
+@app.get("/api/projects/{project_id}/messages")
+def projects_messages(user: CurrentUser, project_id: str, after: Optional[int] = None):
+    return store.list_messages(user.id, project_id, after)
+
+
+@app.post("/api/projects/{project_id}/messages", status_code=201)
+def projects_message_post(user: CurrentUser, project_id: str, body: MessageCreate):
+    return store.post_message(user.id, project_id, body.body)
 
 
 @app.get("/api/reports")

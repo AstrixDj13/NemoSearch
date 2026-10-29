@@ -4,7 +4,7 @@ Every method takes the signed-in account (`uid`) and checks it before touching a
 
 - Anything outside a project (Unassigned) is visible only to the account that made it.
 - A project is visible to its owner and to the people it is shared with (members). Members can read
-  everything in it, write notes, and add their own research, sources and files.
+  everything in it, post to its discussion, and add their own research, sources and files.
 - Renaming, archiving, deleting and sharing a project are for its owner. Research, sources and files can
   be removed by whoever added them and by the project owner.
 
@@ -24,13 +24,17 @@ import sqlalchemy as sa
 from . import notify
 from .blobs import BlobStore
 from .db import (
-    attachments, exports, new_id, now_ms, paper_templates, project_members, projects, reports, saved_sources, users,
-    work_access, works,
+    attachments, exports, new_id, now_ms, paper_templates, project_members, project_messages, projects, reports,
+    saved_sources, users, work_access, works,
 )
 from .errors import Forbidden, Invalid, NotFound, consume
 
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 ATTACHMENTS_PER_DAY = 100
+MAX_MESSAGE_CHARS = 4000
+MESSAGES_PER_DAY = 500
+# How much of a thread one request returns, newest last
+THREAD_PAGE = 200
 
 __all__ = ["Store", "NotFound", "Forbidden", "Invalid", "MAX_ATTACHMENT_BYTES"]
 
@@ -102,6 +106,7 @@ class Store:
                 return None
             row = conn.execute(sa.select(projects).where(projects.c.id == project_id)).one()
             work = self._project_work(conn, uid, row.work_id)
+            discussion = self._discussion_digest(conn, project_id)
         parts = [f"Project: {row.name}"]
         if row.description.strip() and not (work and row.description.startswith("Shared through NemoSearch Network")):
             parts.append(f"Project description: {row.description.strip()}")
@@ -115,6 +120,8 @@ class Store:
                 parts.append(f"Paper topics: {', '.join(work['tags'])}")
         if row.notes.strip():
             parts.append(f"Project notes: {row.notes.strip()[:1500]}")
+        if discussion:
+            parts.append(f"Recent project discussion (oldest first):\n{discussion}")
         if len(parts) == 1 and not row.name.strip():
             return None
         return {"project": row.name, "work": work["title"] if work else None, "text": "\n".join(parts)}
@@ -266,6 +273,56 @@ class Store:
                 project_members.c.project_id == project_id, project_members.c.user_id == member_id
             )).rowcount:
                 raise NotFound(member_id)
+
+    # ------------------------------------------------------------------ discussion
+    @staticmethod
+    def _message_dict(row: sa.Row, uid: str) -> dict:
+        return {"id": row.id, "body": row.body, "createdAt": row.created_at, "mine": row.author_id == uid,
+                "author": {"id": row.author_id, "name": row.name} if row.author_id else None}
+
+    @staticmethod
+    def _thread_query(project_id: str) -> sa.Select:
+        return (sa.select(project_messages, users.c.name)
+                .join(users, users.c.id == project_messages.c.author_id, isouter=True)
+                .where(project_messages.c.project_id == project_id))
+
+    def list_messages(self, uid: str, project_id: str, after: Optional[int] = None) -> list[dict]:
+        """The latest THREAD_PAGE messages, oldest first; with `after`, only those posted since that time."""
+        with self.engine.connect() as conn:
+            self._need_role(conn, uid, project_id)
+            q = self._thread_query(project_id)
+            if after is not None:
+                q = q.where(project_messages.c.created_at > after)
+            rows = conn.execute(q.order_by(project_messages.c.created_at.desc(), project_messages.c.id.desc())
+                                .limit(THREAD_PAGE)).all()
+        return [self._message_dict(r, uid) for r in reversed(rows)]
+
+    def post_message(self, uid: str, project_id: str, body: str) -> dict:
+        text = body.strip()
+        if not text:
+            raise Invalid("Write a message first.")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise Invalid(f"Messages can be up to {MAX_MESSAGE_CHARS} characters; this one has {len(text)}.")
+        mid = new_id("msg")
+        with self.engine.begin() as conn:
+            self._need_role(conn, uid, project_id)
+            consume(conn, uid, "message", MESSAGES_PER_DAY, "messages")
+            conn.execute(project_messages.insert().values(id=mid, project_id=project_id, author_id=uid, body=text, created_at=now_ms()))
+            row = conn.execute(self._thread_query(project_id).where(project_messages.c.id == mid)).one()
+        return self._message_dict(row, uid)
+
+    def _discussion_digest(self, conn: sa.Connection, project_id: str, limit_chars: int = 1500) -> str:
+        """The newest messages that fit in limit_chars, oldest first, for the research agents."""
+        rows = conn.execute(self._thread_query(project_id).order_by(project_messages.c.created_at.desc()).limit(20)).all()
+        lines: list[str] = []
+        used = 0
+        for r in rows:
+            line = f"{r.name or 'Former member'}: {' '.join(r.body.split())}"
+            if used + len(line) > limit_chars:
+                break
+            lines.append(line)
+            used += len(line) + 1
+        return "\n".join(reversed(lines))
 
     # ------------------------------------------------------------------ reports
     def _summary(self, row: sa.Row, uid: str, owner_names: dict[str, str]) -> dict:

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, ExternalLink, FileText, Paperclip, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import { api } from '../api'
+import ProjectThread from './ProjectThread'
 import type { ProjectDetail, SavedSourceRecord } from '../data'
 
 interface ProjectWorkspaceProps {
@@ -18,18 +19,15 @@ const formatSize = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 const formatDate = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
-// Notes, saved sources, attachments and exports for one project (or saved sources for Unassigned)
+// Discussion, sharing, saved sources, attachments and exports for one project (or saved sources for Unassigned)
 export default function ProjectWorkspace({ scope, refreshKey, notify, onChanged, meId }: ProjectWorkspaceProps) {
   const isProject = scope !== 'unassigned'
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [sources, setSources] = useState<SavedSourceRecord[]>([])
   const [loadError, setLoadError] = useState('')
-  const [notes, setNotes] = useState('')
-  const [noteStatus, setNoteStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [uploading, setUploading] = useState(false)
   const [sharing, setSharing] = useState(false)
   const [shareError, setShareError] = useState('')
-  const noteTimer = useRef<number | undefined>(undefined)
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -40,33 +38,13 @@ export default function ProjectWorkspace({ scope, refreshKey, notify, onChanged,
         if (cancelled) return
         setLoadError('')
         setSources(data.sources)
-        if (isProject) {
-          setDetail(data)
-          setNotes(data.notes)
-        }
+        if (isProject) setDetail(data)
       })
       .catch((e: Error) => !cancelled && setLoadError(e.message))
     return () => {
       cancelled = true
     }
   }, [scope, isProject, refreshKey])
-
-  useEffect(() => () => window.clearTimeout(noteTimer.current), [])
-
-  const saveNotes = (value: string) => {
-    setNoteStatus('saving')
-    api
-      .updateProject(scope, { notes: value })
-      .then(() => setNoteStatus('saved'))
-      .catch(() => setNoteStatus('error'))
-  }
-
-  const onNotesChange = (value: string) => {
-    setNotes(value)
-    setNoteStatus('saving')
-    window.clearTimeout(noteTimer.current)
-    noteTimer.current = window.setTimeout(() => saveNotes(value), 700)
-  }
 
   const removeSource = async (source: SavedSourceRecord) => {
     try {
@@ -151,38 +129,7 @@ export default function ProjectWorkspace({ scope, refreshKey, notify, onChanged,
 
   return (
     <div className="project-workspace">
-      {isProject && (
-        <section className="workspace-section" aria-labelledby="ws-notes">
-          <div className="workspace-heading">
-            <h2 id="ws-notes" className="section-label">
-              Notes
-            </h2>
-            <span className="workspace-status" role="status">
-              {noteStatus === 'saving' && 'Saving…'}
-              {noteStatus === 'saved' && 'Saved on the server'}
-              {noteStatus === 'error' && (
-                <>
-                  Couldn't save.{' '}
-                  <button type="button" className="text-link" onClick={() => saveNotes(notes)}>
-                    Retry
-                  </button>
-                </>
-              )}
-            </span>
-          </div>
-          <label className="visually-hidden" htmlFor="project-notes">
-            Project notes
-          </label>
-          <textarea
-            id="project-notes"
-            className="workspace-notes"
-            value={notes}
-            onChange={(event) => onNotesChange(event.target.value)}
-            placeholder="Working notes, open questions, decisions…"
-            rows={4}
-          />
-        </section>
-      )}
+      {isProject && detail && <ProjectThread projectId={scope} memberCount={detail.members.length} legacyNotes={detail.notes} />}
 
       {isProject && detail && (
         <section className="workspace-section" aria-labelledby="ws-members">
@@ -306,6 +253,7 @@ export default function ProjectWorkspace({ scope, refreshKey, notify, onChanged,
                 multiple
                 className="visually-hidden"
                 tabIndex={-1}
+                aria-label="Add files to the project"
                 onChange={(event) => upload(event.target.files)}
               />
               <button type="button" className="text-link" onClick={() => fileInput.current?.click()} disabled={uploading} aria-busy={uploading}>

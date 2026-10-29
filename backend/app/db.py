@@ -122,6 +122,18 @@ saved_sources = sa.Table(
     sa.Column("created_at", ms, nullable=False),
 )
 
+# A project's discussion: plain-text messages between the owner and the people it is shared with
+project_messages = sa.Table(
+    "project_messages", metadata,
+    sa.Column("id", sa.String(40), primary_key=True),
+    sa.Column("project_id", sa.String(40), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    # Kept when the author's account is deleted, shown as a former member
+    sa.Column("author_id", sa.String(40), sa.ForeignKey("users.id", ondelete="SET NULL")),
+    sa.Column("body", sa.Text, nullable=False),
+    sa.Column("created_at", ms, nullable=False),
+    sa.Index("project_messages_thread", "project_id", "created_at"),
+)
+
 attachments = sa.Table(
     "attachments", metadata,
     sa.Column("id", sa.String(40), primary_key=True),

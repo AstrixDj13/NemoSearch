@@ -1,5 +1,5 @@
 // Client for the NemoSearch server: accounts, private research (projects and history) and the Network.
-import type { AttachmentRecord, Project, ProjectDetail, ProjectMember, SavedReport, SavedSourceRecord, Source } from './data'
+import type { AttachmentRecord, Project, ProjectDetail, ProjectMember, ProjectMessage, SavedReport, SavedSourceRecord, Source } from './data'
 import type {
   AbuseReport, AuthConfig, Me, NetworkNotification, NetworkRequest, Organization, Person, PublicUser, RequestKind,
   Visibility, WorkDetail, WorkSummary,
@@ -62,6 +62,9 @@ export const api = {
     request<{ movedReports: number; deletedReports: number }>(`/api/projects/${id}?reports=${reports}`, json('DELETE')),
   addMember: (projectId: string, orcid: string) => request<ProjectMember[]>(`/api/projects/${projectId}/members`, json('POST', { orcid })),
   removeMember: (projectId: string, userId: string) => request<{ ok: boolean }>(`/api/projects/${projectId}/members/${userId}`, json('DELETE')),
+  listMessages: (projectId: string, after?: number) =>
+    request<ProjectMessage[]>(`/api/projects/${projectId}/messages${after === undefined ? '' : `?after=${after}`}`),
+  postMessage: (projectId: string, body: string) => request<ProjectMessage>(`/api/projects/${projectId}/messages`, json('POST', { body })),
 
   listReports: (project = 'all') => request<SavedReport[]>(`/api/reports?project=${encodeURIComponent(project)}`),
   getReport: (id: string) => request<SavedReport>(`/api/reports/${id}`),

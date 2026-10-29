@@ -239,6 +239,15 @@ export interface Project {
   counts: { reports: number; sources: number; attachments: number; exports: number; members: number }
 }
 
+export interface ProjectMessage {
+  id: string
+  body: string
+  createdAt: number
+  mine: boolean
+  /** Null when the author's account was deleted */
+  author: { id: string; name: string } | null
+}
+
 export interface ProjectMember {
   id: string
   name: string
