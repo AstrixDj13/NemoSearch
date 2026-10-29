@@ -50,6 +50,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .primary-nav button { min-height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--muted-text); font-size: 14px; text-align: left; transition: background 180ms ease-out, color 180ms ease-out; }
 .primary-nav button:hover { background: oklch(0.965 0.003 260); color: var(--ink-100); }
 .primary-nav button.active { background: oklch(0.955 0.004 260); color: var(--ink-100); font-weight: 500; }
+/* Projects listed under Library */
+.nav-projects { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0 0 4px; padding: 0 0 0 29px; list-style: none; }
+.primary-nav .nav-projects button { width: 100%; min-height: 32px; gap: 8px; padding: 0 10px; font-size: 13px; }
+.primary-nav .nav-projects button.current { background: oklch(0.955 0.004 260); color: var(--ink-100); font-weight: 500; }
+.nav-project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-projects svg { flex: none; }
+.recent-scope { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; color: var(--muted-text); font-size: 12px; }
+.recent-scope span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-scope .text-link { flex: none; }
 .sidebar > * { flex-shrink: 0; }
 /* Middle region: only the list scrolls, so the profile footer can stay in normal flow */
 .recent-block { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; margin-bottom: 12px; padding-top: 23px; }
@@ -68,11 +77,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .recent-new-project { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted-text); }
 .recent-new-project:hover { background: oklch(0.95 0.003 260); color: var(--ink-100); }
 /* Scope selector: a quiet native select with a custom chevron */
-.scope-select { position: relative; display: block; margin: 0 4px 8px 6px; }
-.scope-select select { width: 100%; min-height: 32px; padding: 0 28px 0 9px; overflow: hidden; border: 1px solid var(--hairline); border-radius: 9px; background: var(--paper); color: var(--ink-100); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; appearance: none; }
-.scope-select select:hover { border-color: var(--ink-70); }
-.scope-select select:focus-visible { border-color: var(--ink-100); outline: 2px dashed var(--ink-100); outline-offset: 2px; }
-.scope-select > svg { position: absolute; top: 50%; right: 10px; color: var(--muted-text); pointer-events: none; transform: translateY(-50%); }
 .recent-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .recent-item { position: relative; display: flex; align-items: center; border-radius: 10px; transition: background 160ms ease-out; }
 .recent-item:hover, .recent-item:focus-within { background: oklch(0.97 0.002 260); }
@@ -116,7 +120,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .app-shell.sidebar-collapsed { --sidebar-width: 76px; }
   .sidebar-collapsed .sidebar { padding-right: 14px; padding-left: 14px; }
   .sidebar-collapsed .sidebar-brand { flex-direction: column; gap: 16px; padding: 0 0 22px; }
-  .sidebar-collapsed .brand > span, .sidebar-collapsed .nav-label, .sidebar-collapsed .new-research-button > .shortcut, .sidebar-collapsed .recent-block { display: none; }
+  .sidebar-collapsed .brand > span, .sidebar-collapsed .nav-label, .sidebar-collapsed .new-research-button > .shortcut, .sidebar-collapsed .recent-block, .sidebar-collapsed .nav-projects { display: none; }
   .sidebar-collapsed .new-research-button, .sidebar-collapsed .primary-nav button { justify-content: center; padding: 0; }
   .sidebar-collapsed .sidebar-profile { justify-content: center; padding: 10px 0; border-color: transparent; }
 }
@@ -433,6 +437,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .project-status { margin: 10px 0 0; color: var(--muted-text); font-size: 14px; }
 /* Projects on the Library's front page, so they are visible rather than tucked inside the dropdown */
 .project-cards { margin: 0 0 34px; }
+.project-cards-head { display: flex; align-items: center; gap: 18px; }
+.project-cards-head h2 { flex: 1; margin: 0; }
+.project-card.archived { color: var(--muted-text); }
 .project-cards ul { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
 .project-cards li { display: flex; }
 .project-card { display: grid; align-content: start; gap: 6px; width: 100%; min-height: 104px; padding: 16px 18px; border: 1px solid var(--hairline); border-radius: 13px; background: var(--paper); color: var(--ink-100); text-align: left; }
@@ -443,8 +450,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .project-card-new { display: flex; align-items: center; justify-content: center; gap: 8px; border-style: dashed; color: var(--muted-text); font-size: 14px; }
 .project-card-new:hover { color: var(--ink-100); }
 .library-toolbar .library-search { flex: 1; }
-.library-scope { width: 220px; flex: 0 0 auto; margin: 0; }
-.library-scope select { height: 100%; min-height: 53px; padding-left: 14px; border-radius: 13px; font-size: 13px; }
 .project-workspace { display: grid; gap: 34px; margin-top: 44px; }
 .workspace-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--ink-100); }
 .workspace-heading h2 { margin: 0; }
@@ -670,8 +675,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .project-chip { padding-left: 8px; }
   .project-chip select { max-width: 92px; }
   .library-toolbar { flex-direction: column; }
-  .library-scope { width: 100%; }
-  .library-scope select { min-height: 44px; }
   .page-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
   .routing-chip { padding: 0 9px; }
   .modal-backdrop { padding: 14px; }

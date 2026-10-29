@@ -512,6 +512,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [activeReportId, setActiveReportId] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; place: 'sidebar' | 'library' } | null>(null)
   const [showArchived, setShowArchived] = useState(false)
+  const [showArchivedProjects, setShowArchivedProjects] = useState(false)
   // Re-renders relative timestamps ("5m ago") once a minute
   const [now, setNow] = useState(() => Date.now())
 
@@ -1502,36 +1503,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
   const isSampleReport = !isLiveRun && submittedQuery === SAMPLE_QUERY
 
-  const scopeSelect = (id: string, className: string) => (
-    <label className={className} htmlFor={id}>
-      <span className="visually-hidden">Show research from</span>
-      <select id={id} value={scope} onChange={(event) => changeScope(event.target.value)}>
-        <option value="all">All research</option>
-        <option value="unassigned">Unassigned</option>
-        {activeProjects.length > 0 && (
-          <optgroup label="Projects">
-            {activeProjects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.role === 'member' ? ` (shared by ${p.owner?.name ?? 'a collaborator'})` : ''}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {archivedProjects.length > 0 && (
-          <optgroup label="Archived projects">
-            {archivedProjects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} (archived)
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-      <ChevronDown size={13} aria-hidden="true" />
-    </label>
-  )
-
   const toastView = (
     <div className={`toast ${toastTone}`}>
       {toastTone === 'error' ? <AlertTriangle size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
@@ -1662,6 +1633,29 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
           >
             <Library size={17} /> <span className="nav-label">Library</span>
           </button>
+          {/* Projects sit under Library so any of them is one click away from every page */}
+          {activeProjects.length > 0 && (
+            <ul className="nav-projects" aria-label="Projects">
+              {activeProjects.map((p) => {
+                const current = view === 'library' && scope === p.id
+                const shared = p.role === 'member' || p.counts.members > 0
+                return (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className={current ? 'current' : ''}
+                      aria-current={current ? 'page' : undefined}
+                      onClick={() => openProject(p.id)}
+                      title={p.role === 'member' ? `${p.name} · shared by ${p.owner?.name ?? 'a collaborator'}` : p.name}
+                    >
+                      <span className="nav-project-name">{p.name}</span>
+                      {shared && <Users size={13} aria-label="Shared" />}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
           <button
             type="button"
             className={view === 'network' ? 'active' : ''}
@@ -1699,7 +1693,14 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 <FolderPlus size={15} aria-hidden="true" />
               </button>
             </div>
-            {scopeSelect('sidebar-scope', 'scope-select')}
+            {scope !== 'all' && (
+              <p className="recent-scope">
+                <span>From {scopeProject?.name ?? 'Unassigned'}</span>
+                <button type="button" className="text-link" onClick={() => changeScope('all')}>
+                  Show all
+                </button>
+              </p>
+            )}
             <div className="recent-scroll">
               {historyStatus === 'loading' ? (
                 <p className="recent-empty">Loading your research…</p>
@@ -2395,23 +2396,43 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   }}
                 />
               )}
-              <p className="library-storage">
-                Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
-              </p>
+              {scope === 'all' && (
+                <p className="library-storage">
+                  Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
+                </p>
+              )}
               {scope === 'all' && (
                 <section className="project-cards" aria-labelledby="project-cards-title">
-                  <h2 id="project-cards-title" className="section-label">
-                    Projects
-                  </h2>
+                  <div className="project-cards-head">
+                    <h2 id="project-cards-title" className="section-label">
+                      Projects
+                    </h2>
+                    {/* What the old dropdown also reached: research outside any project, and archived projects */}
+                    <button type="button" className="text-link" onClick={() => openProject('unassigned')}>
+                      Unassigned research
+                    </button>
+                    {archivedProjects.length > 0 && (
+                      <button
+                        type="button"
+                        className="text-link"
+                        aria-expanded={showArchivedProjects}
+                        onClick={() => setShowArchivedProjects(!showArchivedProjects)}
+                      >
+                        {showArchivedProjects ? 'Hide archived' : `Archived · ${archivedProjects.length}`}
+                      </button>
+                    )}
+                  </div>
                   <ul>
-                    {activeProjects.map((p) => {
+                    {[...activeProjects, ...(showArchivedProjects ? archivedProjects : [])].map((p) => {
                       const shared = p.role === 'member' || p.counts.members > 0
                       return (
                         <li key={p.id}>
-                          <button type="button" className="project-card" onClick={() => openProject(p.id)}>
+                          <button type="button" className={`project-card ${p.archived ? 'archived' : ''}`} onClick={() => openProject(p.id)}>
                             <span className="project-card-kind">
-                              {shared ? <Users size={14} aria-hidden="true" /> : <FolderOpen size={14} aria-hidden="true" />}
-                              {p.role === 'member'
+                              {p.archived ? <Archive size={14} aria-hidden="true" /> : shared ? <Users size={14} aria-hidden="true" /> : <FolderOpen size={14} aria-hidden="true" />}
+                              {p.archived
+                                ? 'Archived'
+                                : p.role === 'member'
                                 ? `Shared by ${p.owner?.name ?? 'a collaborator'}`
                                 : p.counts.members > 0
                                   ? `Shared with ${p.counts.members} ${p.counts.members === 1 ? 'person' : 'people'}`
@@ -2434,7 +2455,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 </section>
               )}
               <div className="library-toolbar">
-              {scopeSelect('library-scope', 'scope-select library-scope')}
               <div className="library-search">
                 <Search size={18} />
                 <input
