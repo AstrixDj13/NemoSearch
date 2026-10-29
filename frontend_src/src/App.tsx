@@ -1633,29 +1633,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
           >
             <Library size={17} /> <span className="nav-label">Library</span>
           </button>
-          {/* Projects sit under Library so any of them is one click away from every page */}
-          {activeProjects.length > 0 && (
-            <ul className="nav-projects" aria-label="Projects">
-              {activeProjects.map((p) => {
-                const current = view === 'library' && scope === p.id
-                const shared = p.role === 'member' || p.counts.members > 0
-                return (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      className={current ? 'current' : ''}
-                      aria-current={current ? 'page' : undefined}
-                      onClick={() => openProject(p.id)}
-                      title={p.role === 'member' ? `${p.name} · shared by ${p.owner?.name ?? 'a collaborator'}` : p.name}
-                    >
-                      <span className="nav-project-name">{p.name}</span>
-                      {shared && <Users size={13} aria-label="Shared" />}
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
           <button
             type="button"
             className={view === 'network' ? 'active' : ''}
@@ -2036,21 +2013,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'report' && (
             <section className="report-view">
-              <div className="report-topline">
-                <button type="button" className="text-back" onClick={newResearch}>
-                  <Plus size={16} /> New research
-                </button>
-                <span className="sample-notice">
-                  {isSampleReport
-                    ? 'Illustrative report · Preview data'
-                    : coverageIncomplete
-                      ? 'Live briefing · Partial coverage'
-                      : 'Verified Evidence · Live Briefing'}
-                </span>
-              </div>
               <div className="report-title-block">
+                {/* Only the sample report says anything extra up here: that its data is not real */}
                 <div className="section-label">
                   Research brief / {focusOptions.find((option) => option.id === focusMode)?.label}
+                  {isSampleReport && ' · Sample with preview data'}
                 </div>
                 <h1>{submittedQuery}</h1>
                 {/* Stats and actions share one wrapping row; the actions drop below when the row is too narrow */}

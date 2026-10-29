@@ -50,12 +50,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .primary-nav button { min-height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--muted-text); font-size: 14px; text-align: left; transition: background 180ms ease-out, color 180ms ease-out; }
 .primary-nav button:hover { background: oklch(0.965 0.003 260); color: var(--ink-100); }
 .primary-nav button.active { background: oklch(0.955 0.004 260); color: var(--ink-100); font-weight: 500; }
-/* Projects listed under Library */
-.nav-projects { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0 0 4px; padding: 0 0 0 29px; list-style: none; }
-.primary-nav .nav-projects button { width: 100%; min-height: 32px; gap: 8px; padding: 0 10px; font-size: 13px; }
-.primary-nav .nav-projects button.current { background: oklch(0.955 0.004 260); color: var(--ink-100); font-weight: 500; }
-.nav-project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-projects svg { flex: none; }
 .recent-scope { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; color: var(--muted-text); font-size: 12px; }
 .recent-scope span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-scope .text-link { flex: none; }
@@ -120,7 +114,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .app-shell.sidebar-collapsed { --sidebar-width: 76px; }
   .sidebar-collapsed .sidebar { padding-right: 14px; padding-left: 14px; }
   .sidebar-collapsed .sidebar-brand { flex-direction: column; gap: 16px; padding: 0 0 22px; }
-  .sidebar-collapsed .brand > span, .sidebar-collapsed .nav-label, .sidebar-collapsed .new-research-button > .shortcut, .sidebar-collapsed .recent-block, .sidebar-collapsed .nav-projects { display: none; }
+  .sidebar-collapsed .brand > span, .sidebar-collapsed .nav-label, .sidebar-collapsed .new-research-button > .shortcut, .sidebar-collapsed .recent-block { display: none; }
   .sidebar-collapsed .new-research-button, .sidebar-collapsed .primary-nav button { justify-content: center; padding: 0; }
   .sidebar-collapsed .sidebar-profile { justify-content: center; padding: 10px 0; border-color: transparent; }
 }
@@ -211,9 +205,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* Report */
 .report-view { max-width: var(--page-max); margin: 0 auto; }
-.report-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.sample-notice { color: var(--ink-50); font-family: 'IBM Plex Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
-.report-title-block { position: relative; padding: 33px 0 30px; }
+.report-title-block { position: relative; padding: 20px 0 30px; }
 .report-title-block h1 { max-width: 880px; margin: 15px 0 19px; font-size: clamp(34px, 3.5vw, 50px); font-weight: 500; line-height: 1.1; letter-spacing: -.045em; }
 .report-meta { display: flex; flex-wrap: wrap; gap: 9px 22px; color: var(--muted-text); font-size: 11px; }
 .report-meta > span { display: flex; align-items: center; gap: 6px; }
@@ -640,8 +632,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .run-row-status { display: none; }
   .run-agent-icon { width: 34px; height: 34px; }
   .run-agent-copy p { font-size: 11px; }
-  .report-topline { align-items: flex-start; }
-  .sample-notice { max-width: 130px; text-align: right; }
   .report-title-block { padding-top: 25px; }
   .report-title-block h1 { font-size: 35px; }
   .report-actions button { min-height: 44px; }
@@ -698,7 +688,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 @media print {
-  .sidebar, .topbar, .dot-field, .report-topline, .report-actions, .report-tabs, .report-sources-rail, .follow-up-box, .toast { display: none !important; }
+  .sidebar, .topbar, .dot-field, .report-actions, .report-tabs, .report-sources-rail, .follow-up-box, .toast { display: none !important; }
   .workspace { margin: 0; }
   .main-content { padding: 0; }
   .report-layout { display: block; }
