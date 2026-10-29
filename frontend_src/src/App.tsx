@@ -43,6 +43,7 @@ import {
   ShieldCheck,
   Upload,
   UserRound,
+  Users,
   SlidersHorizontal,
   X,
 } from 'lucide-react'
@@ -61,7 +62,7 @@ import type { Me, NetworkRoute, WorkSummary } from './network'
 import RoutingEditor from './components/RoutingEditor'
 import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './components/SourceProvenance'
 import { isPaper, sourceOrigin } from './sources'
-import { byRecency, makeTitle, normalizeReports, reportTime, runNumbers } from './library'
+import { byRecency, makeTitle, normalizeReports, projectIdFromPath, projectPath, relativeTime, reportTime, runNumbers } from './library'
 import PaperStudio from './components/PaperStudio'
 import StudioFileTree from './components/StudioFileTree'
 import {
@@ -422,7 +423,9 @@ interface AppProps {
 }
 
 export default function App({ me, orcidBase, refreshMe }: AppProps) {
-  const [view, setView] = useState<View>(() => (routeFromPath(window.location.pathname) ? 'network' : 'home'))
+  const [view, setView] = useState<View>(() =>
+    routeFromPath(window.location.pathname) ? 'network' : projectIdFromPath(window.location.pathname) ? 'library' : 'home'
+  )
   const [networkRoute, setNetworkRoute] = useState<NetworkRoute>(() => routeFromPath(window.location.pathname) ?? { page: 'discover' })
   const [publishing, setPublishing] = useState<{ reportId?: string } | null>(null)
   const [relatedWorks, setRelatedWorks] = useState<WorkSummary[]>([])
@@ -490,6 +493,9 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [historyError, setHistoryError] = useState('')
   const [projects, setProjects] = useState<Project[]>([])
   const [scope, setScope] = useState<ResearchScope>(() => {
+    // A project's own address wins over the remembered choice
+    const fromPath = projectIdFromPath(window.location.pathname)
+    if (fromPath) return fromPath
     try {
       return localStorage.getItem('nemosearch_scope') || 'all'
     } catch {
@@ -628,6 +634,8 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
       const [reports, projectList] = await Promise.all([api.listReports('all'), api.listProjects()])
       setLibraryReports(reports)
       setProjects(projectList)
+      // A project you were removed from, or a link to one you can't open, falls back to the whole Library
+      setScope((s) => (s === 'all' || s === 'unassigned' || projectList.some((p) => p.id === s) ? s : 'all'))
       setHistoryStatus('ready')
     } catch (e) {
       setHistoryError((e as Error).message)
@@ -665,18 +673,29 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   useEffect(() => {
     const onPop = () => {
       const route = routeFromPath(window.location.pathname)
+      const projectId = projectIdFromPath(window.location.pathname)
       if (route) {
         setNetworkRoute(route)
         setView('network')
-      } else setView((current) => (current === 'network' ? 'home' : current))
+      } else if (projectId) {
+        changeScopeRef.current(projectId)
+        setView('library')
+      } else {
+        setView((current) => (current === 'network' ? 'home' : current))
+        // Back from a project lands on the whole Library
+        setScope((s) => (s === 'all' || s === 'unassigned' ? s : 'all'))
+      }
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  // An open project has its own address (so Back, refresh and links work); every other non-Network view lives at /
   useEffect(() => {
-    if (view !== 'network' && window.location.pathname.startsWith('/network')) window.history.pushState(null, '', '/')
-  }, [view])
+    if (view === 'network') return
+    const path = view === 'library' && scope !== 'all' && scope !== 'unassigned' ? projectPath(scope) : '/'
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+  }, [view, scope])
 
   const navigate = (nextView: View) => {
     if (nextView === 'network') return navigateNetwork(networkRoute)
@@ -1045,6 +1064,15 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     setScope(next)
     // New research follows the project you are looking at
     setRunProject(next !== 'all' && next !== 'unassigned' && !projects.find((p) => p.id === next)?.archived ? next : '')
+  }
+  // The Back-button listener is registered once; this keeps it on the current project list
+  const changeScopeRef = useRef(changeScope)
+  changeScopeRef.current = changeScope
+
+  const openProject = (projectId: string) => {
+    changeScope(projectId)
+    navigate('library')
+    window.scrollTo(0, 0)
   }
 
   const submitProjectDialog = async (name: string, description: string) => {
@@ -1625,7 +1653,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
           <button
             type="button"
             className={view === 'library' ? 'active' : ''}
-            onClick={() => navigate('library')}
+            onClick={() => {
+              // Library always opens on the whole Library; projects are one click away from there
+              changeScope('all')
+              navigate('library')
+            }}
             title="Library"
           >
             <Library size={17} /> <span className="nav-label">Library</span>
@@ -2318,17 +2350,22 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'library' && (
             <section className="library-view">
+              {scope !== 'all' && (
+                <button type="button" className="library-back" onClick={() => openProject('all')}>
+                  <ArrowLeft size={15} aria-hidden="true" /> Library
+                </button>
+              )}
               <div className="page-heading">
                 <div>
-                  {/* Only status worth stating gets a label above the title; a plain project has none */}
-                  {scopeProject && (scopeProject.archived || scopeProject.role === 'member') && (
-                    <div className="section-label">
-                      {scopeProject.archived ? 'Archived project' : `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}`}
-                    </div>
-                  )}
                   {scopeProject ? (
                     <>
                       <h1 className="project-title">{scopeProject.name}</h1>
+                      {/* Only status worth stating gets a line under the title; a plain project has none */}
+                      {(scopeProject.archived || scopeProject.role === 'member') && (
+                        <p className="project-status">
+                          {scopeProject.archived ? 'Archived project' : `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}`}
+                        </p>
+                      )}
                       {/* A collaboration's header already says what it is about */}
                       {scopeProject.description && !(scopeProject.work && scopeProject.description.startsWith('Shared through NemoSearch Network')) && (
                         <p className="project-description">{scopeProject.description}</p>
@@ -2361,6 +2398,41 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
               <p className="library-storage">
                 Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
               </p>
+              {scope === 'all' && (
+                <section className="project-cards" aria-labelledby="project-cards-title">
+                  <h2 id="project-cards-title" className="section-label">
+                    Projects
+                  </h2>
+                  <ul>
+                    {activeProjects.map((p) => {
+                      const shared = p.role === 'member' || p.counts.members > 0
+                      return (
+                        <li key={p.id}>
+                          <button type="button" className="project-card" onClick={() => openProject(p.id)}>
+                            <span className="project-card-kind">
+                              {shared ? <Users size={14} aria-hidden="true" /> : <FolderOpen size={14} aria-hidden="true" />}
+                              {p.role === 'member'
+                                ? `Shared by ${p.owner?.name ?? 'a collaborator'}`
+                                : p.counts.members > 0
+                                  ? `Shared with ${p.counts.members} ${p.counts.members === 1 ? 'person' : 'people'}`
+                                  : 'Only you'}
+                            </span>
+                            <strong>{p.name}</strong>
+                            <small>
+                              {p.counts.reports} research {p.counts.reports === 1 ? 'run' : 'runs'} · {relativeTime(p.updatedAt, now)}
+                            </small>
+                          </button>
+                        </li>
+                      )
+                    })}
+                    <li>
+                      <button type="button" className="project-card project-card-new" onClick={() => openProjectDialog({ mode: 'create' })}>
+                        <Plus size={16} aria-hidden="true" /> New project
+                      </button>
+                    </li>
+                  </ul>
+                </section>
+              )}
               <div className="library-toolbar">
               {scopeSelect('library-scope', 'scope-select library-scope')}
               <div className="library-search">
@@ -2435,8 +2507,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 openProject: (projectId) => {
                   refreshProjects()
                   loadHistory()
-                  changeScope(projectId)
-                  navigate('library')
+                  openProject(projectId)
                 },
                 orcidBase,
               }}

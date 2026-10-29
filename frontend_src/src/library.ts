@@ -78,3 +78,16 @@ export function runNumbers(reports: SavedReport[]): Map<string, number> {
 
 /** Newest first; undated (seed) reports keep their order after dated ones. */
 export const byRecency = (a: SavedReport, b: SavedReport) => (b.createdAt ?? 0) - (a.createdAt ?? 0)
+
+/** Address of an open project in the Library, e.g. /library/projects/p_abc. */
+export const projectPath = (projectId: string) => `/library/projects/${encodeURIComponent(projectId)}`
+
+export function projectIdFromPath(path: string): string | null {
+  const match = /^\/library\/projects\/([^/]+)\/?$/.exec(path)
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return null // a mangled link; open the app normally
+  }
+}

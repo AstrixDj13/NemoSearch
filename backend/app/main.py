@@ -609,4 +609,10 @@ async def network_page(rest: str = ""):
     return FileResponse(FRONTEND / "index.html")
 
 
+# An open project has its own address too, so Back, refresh and links to it work
+@app.get("/library/{rest:path}")
+async def library_page(rest: str = ""):
+    return FileResponse(FRONTEND / "index.html")
+
+
 app.mount("/", StaticFiles(directory=FRONTEND), name="static")
