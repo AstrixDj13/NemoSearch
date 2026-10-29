@@ -92,8 +92,24 @@ Signing in uses ORCID. For local development without ORCID credentials, add `AUT
 - **Requests**: ask to read a work, or propose a collaboration; accepting a collaboration opens a shared project. Blocking, abuse reports, admin takedowns, per-account rate limits, and claiming papers published elsewhere (when OpenAlex lists your ORCID iD as an author) are built in. No feeds, likes or follower counts.
 - **Permissions** are enforced on the server for every request, including downloads (short-lived signed links). Private works never appear in search, profiles or listings.
 
-### Deploying
-Set `APP_ENV=production`; the server refuses to start until it has an https `APP_URL`, a `SECRET_KEY`, a PostgreSQL `DATABASE_URL`, S3-compatible storage (`STORAGE_BACKEND=s3`) and ORCID credentials. See `.env.example`. Tables are created on first start; later schema changes need a migration.
+### Deploying on Nebius Serverless AI
+
+NemoSearch ships with first-class deployment support for both **Nebius Serverless Endpoints** (real-time web app + SSE streaming pipeline) and **Nebius Serverless Jobs** (asynchronous background deep-research & LaTeX manuscript generation):
+
+- **Container Image ([Dockerfile](Dockerfile))**: Multi-stage build compiling the React/Vite Paper Studio UI (`frontend_src/`) and running the FastAPI + Uvicorn backend (`backend.app.main:app`) on port `8000`.
+- **Automated GHCR CI/CD ([.github/workflows/nebius-deploy.yml](.github/workflows/nebius-deploy.yml))**: Automatically builds and pushes `ghcr.io/astrixdj13/nemosearch:latest` whenever `main` is updated.
+- **Nebius Serverless Endpoints ([deploy/nebius_serverless.sh](deploy/nebius_serverless.sh))**: Deploys the persistent web application and live SSE agent streaming via `nebius ai endpoint create`:
+  ```bash
+  ./deploy/nebius_serverless.sh endpoint
+  ```
+- **Nebius Serverless Jobs ([scripts/nebius_job_worker.py](scripts/nebius_job_worker.py))**: Runs headless batch research + Overleaf `.zip` package generation via `nebius ai job create`:
+  ```bash
+  ./deploy/nebius_serverless.sh job "Dense vs. Mixture-of-Experts models for efficient inference" neurips
+  ```
+- **Full Step-by-Step Guide**: See **[deploy/NEBIUS_DEPLOYMENT.md](deploy/NEBIUS_DEPLOYMENT.md)** for Web Console and CLI instructions.
+
+#### Production Environment Hardening
+When `APP_ENV=production` is set, the server enforces strict startup checks and refuses to start until it has an `https://` `APP_URL`, a strong `SECRET_KEY`, a PostgreSQL `DATABASE_URL`, S3-compatible storage (`STORAGE_BACKEND=s3`), and ORCID credentials. See `.env.example`. Tables are created on first start; later schema changes need a migration.
 
 Data from the old single-user database can be copied into an account with `python scripts/import_legacy_db.py <your ORCID iD>`.
 
