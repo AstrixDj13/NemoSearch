@@ -2020,45 +2020,48 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   Research brief / {focusOptions.find((option) => option.id === focusMode)?.label}
                 </div>
                 <h1>{submittedQuery}</h1>
-                <div className="report-meta">
-                  {coverageIncomplete ? (
-                    <span className="meta-warning">
-                      <AlertTriangle size={14} aria-hidden="true" /> Completed with partial coverage
-                    </span>
-                  ) : (
-                    <span>
-                      <Check size={14} /> Research complete
-                    </span>
-                  )}
-                  <span>{currentSources.length} sources reviewed</span>
-                  {currentSources.some(isPaper) && <span>{currentSources.filter(isPaper).length} scholarly papers</span>}
-                  <span>5 agent stages</span>
-                  {liveStats.elapsed && <span>Completed in {liveStats.elapsed}s</span>}
-                </div>
-                <div className="report-actions">
-                  <button type="button" onClick={() => navigate('studio')} title="Draft full publication-grade LaTeX paper">
-                    <GraduationCap size={16} /> Paper Studio (LaTeX)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      window.print()
-                      recordExport('pdf', `${activeReport?.title || submittedQuery}.pdf`)
-                    }}
-                  >
-                    <FileText size={16} /> Export PDF
-                  </button>
-                  <button type="button" onClick={openSlides}>
-                    <Presentation size={16} /> Slides
-                  </button>
-                  <button type="button" onClick={shareReport}>
-                    <Share2 size={16} /> Share
-                  </button>
-                  {activeReport && activeReport.mine !== false && liveReport && (
-                    <button type="button" onClick={() => setPublishing({ reportId: activeReport.id })} title="Publish this report to NemoSearch Network">
-                      <Upload size={16} /> Publish
+                {/* Stats and actions share one wrapping row; the actions drop below when the row is too narrow */}
+                <div className="report-title-foot">
+                  <div className="report-meta">
+                    {coverageIncomplete ? (
+                      <span className="meta-warning">
+                        <AlertTriangle size={14} aria-hidden="true" /> Completed with partial coverage
+                      </span>
+                    ) : (
+                      <span>
+                        <Check size={14} /> Research complete
+                      </span>
+                    )}
+                    <span>{currentSources.length} sources reviewed</span>
+                    {currentSources.some(isPaper) && <span>{currentSources.filter(isPaper).length} scholarly papers</span>}
+                    <span>5 agent stages</span>
+                    {liveStats.elapsed && <span>Completed in {liveStats.elapsed}s</span>}
+                  </div>
+                  <div className="report-actions">
+                    <button type="button" onClick={() => navigate('studio')} title="Draft full publication-grade LaTeX paper">
+                      <GraduationCap size={16} /> Paper Studio (LaTeX)
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.print()
+                        recordExport('pdf', `${activeReport?.title || submittedQuery}.pdf`)
+                      }}
+                    >
+                      <FileText size={16} /> Export PDF
+                    </button>
+                    <button type="button" onClick={openSlides}>
+                      <Presentation size={16} /> Slides
+                    </button>
+                    <button type="button" onClick={shareReport}>
+                      <Share2 size={16} /> Share
+                    </button>
+                    {activeReport && activeReport.mine !== false && liveReport && (
+                      <button type="button" onClick={() => setPublishing({ reportId: activeReport.id })} title="Publish this report to NemoSearch Network">
+                        <Upload size={16} /> Publish
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
               {!isSampleReport && <CoverageNotice coverage={coverageForNotice} />}

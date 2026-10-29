@@ -41,6 +41,7 @@
 .network-body { padding-top: 24px; }
 .network-body .library-toolbar { display: flex; flex-wrap: wrap; gap: 10px; }
 .network-body .library-search { flex: 1 1 320px; }
+.net-search-submit { flex: none; min-height: 53px; padding: 0 22px; font-size: 14px; }
 .segmented { display: inline-flex; align-self: center; padding: 3px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--paper); }
 .segmented button { min-height: 34px; padding: 0 13px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-text); font-size: 12px; }
 .segmented button[aria-pressed="true"] { background: var(--ink-100); color: var(--paper); }

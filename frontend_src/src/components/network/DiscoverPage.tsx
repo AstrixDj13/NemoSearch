@@ -52,6 +52,7 @@ export default function DiscoverPage({ ctx }: { ctx: NetworkContext }) {
     <section aria-label="Discover">
       <form
         className="library-toolbar"
+        role="search"
         onSubmit={(event) => {
           event.preventDefault()
           setSubmitted(query.trim())
@@ -82,10 +83,13 @@ export default function DiscoverPage({ ctx }: { ctx: NetworkContext }) {
               }}
               aria-label="Clear search"
             >
-              <X size={16} />
+              <X size={16} aria-hidden="true" />
             </button>
           )}
         </div>
+        <button type="submit" className="secondary-button net-search-submit">
+          Search
+        </button>
       </form>
 
       {tag && (

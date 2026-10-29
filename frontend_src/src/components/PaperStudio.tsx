@@ -513,7 +513,7 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
 
   return (
     <div className="paper-studio-container">
-      {/* Same heading pattern as Library: plain title, one short description, then the page's tools */}
+      {/* Same heading pattern as Library; the actions follow the fields they act on */}
       <header>
         <div className="page-heading">
           <div>
@@ -521,23 +521,6 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
           </div>
         </div>
         <p className="page-description">Draft a LaTeX paper and BibTeX references from your verified research, then steer the co-author.</p>
-        <div className="studio-actions">
-          <button type="button" className="studio-btn" onClick={() => setInstallModalOpen(true)}>
-            <Upload size={16} aria-hidden="true" /> Install template
-          </button>
-          <button
-            type="button"
-            className={`studio-btn ${hasDraft ? '' : 'studio-btn-primary'}`}
-            onClick={() => generatePaper(selectedTemplateId)}
-            disabled={!currentTopic || isGenerating || isRefining}
-          >
-            {isGenerating ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
-            {isGenerating ? 'Drafting…' : hasDraft ? 'Re-draft paper' : 'Draft paper'}
-          </button>
-          <button type="button" className={`studio-btn ${hasDraft ? 'studio-btn-primary' : ''}`} onClick={handleDownloadZip} disabled={!hasDraft}>
-            <FolderArchive size={16} aria-hidden="true" /> Download .zip
-          </button>
-        </div>
       </header>
 
       <div className="studio-settings">
@@ -584,6 +567,24 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
             <option value="custom_install_action">Install a custom template…</option>
           </select>
         </div>
+      </div>
+
+      <div className="studio-actions">
+        <button type="button" className="studio-btn" onClick={() => setInstallModalOpen(true)}>
+          <Upload size={16} aria-hidden="true" /> Install template
+        </button>
+        <button
+          type="button"
+          className={`studio-btn ${hasDraft ? '' : 'studio-btn-primary'}`}
+          onClick={() => generatePaper(selectedTemplateId)}
+          disabled={!currentTopic || isGenerating || isRefining}
+        >
+          {isGenerating ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+          {isGenerating ? 'Drafting…' : hasDraft ? 'Re-draft paper' : 'Draft paper'}
+        </button>
+        <button type="button" className={`studio-btn ${hasDraft ? 'studio-btn-primary' : ''}`} onClick={handleDownloadZip} disabled={!hasDraft}>
+          <FolderArchive size={16} aria-hidden="true" /> Download .zip
+        </button>
       </div>
 
       <section className="studio-coauthor-card" aria-labelledby="coauthor-title">
