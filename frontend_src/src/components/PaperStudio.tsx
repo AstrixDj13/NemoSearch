@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Check,
   Columns2,
@@ -1139,9 +1140,59 @@ function ChatBubble({ speaker, body, mine = false, meta }: { speaker: string; bo
         <strong>{speaker}</strong>
         {meta && <span>{meta}</span>}
       </div>
-      <p>{body}</p>
+      <ChatText text={body} />
     </div>
   )
+}
+
+/** Bold, italics and inline code inside one line of a chat message */
+function chatInline(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\s][^*\n]*\*)/g).map((part, i) => {
+    if (/^(\*\*|__).+\1$/.test(part)) return <strong key={i}>{part.slice(2, -2)}</strong>
+    if (/^`.+`$/.test(part)) return <code key={i}>{part.slice(1, -1)}</code>
+    if (/^\*.+\*$/.test(part)) return <em key={i}>{part.slice(1, -1)}</em>
+    return part
+  })
+}
+
+/** The co-author's light Markdown (paragraphs, lists, headings) as React elements. Messages are shared with the
+ * whole project, so model output is never inserted as HTML. */
+function ChatText({ text }: { text: string }) {
+  const blocks: ReactNode[] = []
+  let para: string[] = []
+  let list: { ordered: boolean; start: number; items: string[] } | null = null
+  const flush = () => {
+    if (para.length) blocks.push(<p key={blocks.length}>{chatInline(para.join('\n'))}</p>)
+    if (list) {
+      const items = list.items.map((item, i) => <li key={i}>{chatInline(item)}</li>)
+      blocks.push(list.ordered ? <ol key={blocks.length} start={list.start}>{items}</ol> : <ul key={blocks.length}>{items}</ul>)
+    }
+    para = []
+    list = null
+  }
+  for (const line of text.replace(/\r/g, '').split('\n')) {
+    const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/)
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/)
+    const heading = line.match(/^\s*#{1,6}\s+(.*)$/)
+    if (ordered || bullet) {
+      const isOrdered = Boolean(ordered)
+      if (para.length || (list && list.ordered !== isOrdered)) flush()
+      if (!list) list = { ordered: isOrdered, start: ordered ? Number(ordered[1]) : 1, items: [] }
+      list.items.push(ordered ? ordered[2] : bullet![1])
+    } else if (!line.trim()) {
+      flush()
+    } else if (heading) {
+      flush()
+      blocks.push(<p key={blocks.length}><strong>{chatInline(heading[1])}</strong></p>)
+    } else if (list && /^\s+/.test(line)) {
+      list.items[list.items.length - 1] += ` ${line.trim()}` // a list item continued on the next line
+    } else {
+      if (list) flush()
+      para.push(line)
+    }
+  }
+  flush()
+  return <div className="chat-text">{blocks}</div>
 }
 
 function ChatMessage({ message: m }: { message: PaperChatMessage }) {

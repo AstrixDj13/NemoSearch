@@ -737,7 +737,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .coauthor-msg.mine { align-self: flex-end; border-color: var(--ink-100); }
 .coauthor-msg-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 4px; font-size: 13px; }
 .coauthor-msg-head span { color: var(--muted-text); font-size: 12px; }
-.coauthor-msg p { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-text { display: grid; gap: 8px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.chat-text p { margin: 0; white-space: pre-wrap; }
+.chat-text ol, .chat-text ul { display: grid; gap: 4px; margin: 0; padding-left: 22px; }
+.chat-text ol { list-style: decimal; }
+.chat-text ul { list-style: disc; }
+.chat-text code { padding: 1px 5px; border-radius: 4px; background: oklch(0.94 0.004 260); font-size: 13px; }
 .coauthor-typing { display: flex; align-items: center; gap: 8px; color: var(--muted-text); font-size: 13px; }
 textarea.coauthor-text-input { height: auto; min-height: 44px; padding: 10px 14px; resize: vertical; font-family: inherit; line-height: 1.4; }
 .studio-save-state { margin-left: auto; color: var(--muted-text); font-size: 13px; }
