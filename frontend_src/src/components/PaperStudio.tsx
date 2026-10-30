@@ -475,20 +475,26 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
 
   const isImageFile = activeFileId.endsWith('.png') || activeFileId.endsWith('.jpg') || activeFileId.endsWith('.pdf')
 
+  // Citations are numbered in the order the text first cites them, as BibTeX's unsrt style does
+  const citeNumbers = citationOrder(latexText)
+  const cited = references
+    .filter((r) => citeNumbers.has(r.key))
+    .sort((a, b) => (citeNumbers.get(a.key) ?? 0) - (citeNumbers.get(b.key) ?? 0))
+
   // Dynamic LaTeX document parser for the right-hand Formatted Manuscript Preview
   const parseDocumentForPreview = () => {
     const titleMatch = latexText.match(/\\title\{([^}]+)\}/)
-    const headline = titleMatch ? titleMatch[1].replace(/\\\\/g, ' ').replace(/\\textbf\{([^}]+)\}/g, '$1').trim() : topicTitle
+    const headline = titleMatch ? inlineLatex(titleMatch[1], citeNumbers) : topicTitle
 
     const abstractMatch = latexText.match(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/)
-    const abstractText = abstractMatch ? inlineLatex(abstractMatch[1].trim()) : ''
+    const abstractText = abstractMatch ? inlineLatex(abstractMatch[1].trim(), citeNumbers) : ''
 
     const secRegex = /\\section\*?\{([^}]+)\}([\s\S]*?)(?=\\section\*?\{|\\begin\{thebibliography\}|\\bibliography|\\end\{document\}|$)/g
     const sections: { title: string; body: string }[] = []
     let match
     while ((match = secRegex.exec(latexText)) !== null) {
       sections.push({
-        title: match[1].trim(),
+        title: inlineLatex(match[1].trim(), citeNumbers),
         body: match[2].trim(),
       })
     }
@@ -845,7 +851,7 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
                     previewDoc.sections.map((sec, idx) => (
                       <div key={idx} className="paper-section">
                         <h4>{`${idx + 1}. ${sec.title}`}</h4>
-                        <RenderSectionBody body={sec.body} />
+                        <RenderSectionBody body={sec.body} cites={citeNumbers} />
                       </div>
                     ))
                   ) : (
@@ -854,10 +860,10 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
 
                   <h4>References</h4>
                   <ol className="preview-references-list">
-                    {references.map((r) => (
+                    {cited.map((r) => (
                       <li className="preview-ref-entry" key={r.key}>
-                        {r.authors && <strong>{r.authors}</strong>}
-                        {r.year ? ` (${r.year})` : ''}. {r.title}. <span className="ref-key">[{r.key}]</span>
+                        {r.authors && <strong>{inlineLatex(r.authors)}</strong>}
+                        {r.year ? ` (${r.year})` : ''}. {inlineLatex(r.title)}.
                       </li>
                     ))}
                   </ol>
@@ -980,14 +986,48 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
   )
 }
 
-/** Readable text for simple inline LaTeX commands in the preview (the .tex source itself is untouched). */
-function inlineLatex(text: string): string {
-  return text
-    .replace(/\\cite\{([^}]+)\}/g, '[$1]')
-    .replace(/\\(?:textbf|textit|emph|texttt|textsc)\{([^}]+)\}/g, '$1')
+/** Each cited key's number, in the order the text first cites it */
+function citationOrder(latex: string): Map<string, number> {
+  const order = new Map<string, number>()
+  for (const m of latex.matchAll(/\\cite[pt]?\*?(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
+    for (const key of m[1].split(',').map((k) => k.trim())) if (key && !order.has(key)) order.set(key, order.size + 1)
+  }
+  return order
 }
 
-function RenderSectionBody({ body }: { body: string }) {
+const MATH_SYMBOLS: Record<string, string> = {
+  times: '×', approx: '≈', pm: '±', leq: '≤', le: '≤', geq: '≥', ge: '≥', neq: '≠', sim: '∼', cdot: '·',
+  rightarrow: '→', to: '→', leftarrow: '←', infty: '∞', alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ',
+  lambda: 'λ', mu: 'μ', sigma: 'σ', theta: 'θ', sum: '∑', degree: '°', circ: '°',
+}
+
+/** What LaTeX would print for inline markup, for the preview only (the .tex source is untouched). */
+function inlineLatex(text: string, cites?: Map<string, number>): string {
+  let t = text
+    .replace(/(^|[^\\])%.*$/gm, '$1') // comments
+    .replace(/\\cite[pt]?\*?(?:\[[^\]]*\])?\{([^}]+)\}/g, (_, keys: string) =>
+      `[${keys.split(',').map((k) => cites?.get(k.trim()) ?? '?').join(', ')}]`)
+    .replace(/(?<!\\)\$([^$]+?)(?<!\\)\$/g, (_, math: string) =>
+      math.replace(/\^\{?\\circ\}?/g, '°').replace(/\\([a-zA-Z]+)/g, (m, name: string) => MATH_SYMBOLS[name] ?? m).replace(/[{}^]/g, ''))
+    .replace(/\\href\{[^}]*\}\{([^}]*)\}/g, '$1')
+    .replace(/\\footnote\{([^}]*)\}/g, ' ($1)')
+    .replace(/~?\\(?:ref|eqref|autoref|cref)\{[^}]*\}/g, '')
+    .replace(/\\label\{[^}]*\}/g, '')
+    .replace(/\\(?:ldots|dots)\b/g, '…')
+    .replace(/---/g, '—')
+    .replace(/--/g, '–')
+    .replace(/``/g, '“')
+    .replace(/''/g, '”')
+    .replace(/\\([%&$#_{}])/g, '$1')
+    .replace(/\\[,;:! ]/g, ' ')
+    .replace(/\\\\/g, ' ')
+    .replace(/(?<!\\)~/g, '\u00a0')
+  // Formatting commands keep their text (repeated for nesting); anything left unknown is dropped
+  for (let i = 0; i < 3; i++) t = t.replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g, '$1')
+  return t.replace(/\\[a-zA-Z]+\*?/g, '').replace(/[ \t]+/g, ' ').trim()
+}
+
+function RenderSectionBody({ body, cites }: { body: string; cites: Map<string, number> }) {
   const chunks = body.split(/\n\s*\n/)
 
   return (
@@ -1027,7 +1067,7 @@ function RenderSectionBody({ body }: { body: string }) {
               .filter((r) => r.length > 0)
 
             const rows = rawRows.map((r) =>
-              r.split('&').map((cell) => cell.replace(/\\textbf\{([^}]+)\}/g, '$1').replace(/\$([^$]+)\$/g, '$1').trim())
+              r.split(/(?<!\\)&/).map((cell) => inlineLatex(cell, cites))
             )
 
             if (rows.length > 0) {
@@ -1064,13 +1104,7 @@ function RenderSectionBody({ body }: { body: string }) {
           const items = trimmed
             .split('\\item')
             .slice(1)
-            .map((item) =>
-              item
-                .replace(/\\end\{itemize\}|\\end\{enumerate\}/g, '')
-                .replace(/\\cite\{([^}]+)\}/g, '[$1]')
-                .replace(/\\textbf\{([^}]+)\}/g, '$1')
-                .trim()
-            )
+            .map((item) => inlineLatex(item.replace(/\\(?:begin|end)\{(?:itemize|enumerate)\}/g, ''), cites))
             .filter((item) => item.length > 0)
 
           return (
@@ -1083,9 +1117,10 @@ function RenderSectionBody({ body }: { body: string }) {
         }
 
         // Regular paragraphs
-        const cleanPara = inlineLatex(trimmed)
-          .replace(/\\subsection\*?\{([^}]+)\}/g, '• $1:')
-          .replace(/\\subsubsection\*?\{([^}]+)\}/g, '• $1:')
+        const cleanPara = inlineLatex(
+          trimmed.replace(/\\subsection\*?\{([^}]+)\}/g, '• $1:').replace(/\\subsubsection\*?\{([^}]+)\}/g, '• $1:'),
+          cites
+        )
 
         return (
           <p key={cIdx}>
