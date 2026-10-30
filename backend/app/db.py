@@ -105,6 +105,8 @@ reports = sa.Table(
     sa.Column("followups_json", sa.Text, nullable=False, server_default="[]"),
     sa.Column("archived", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("deleted", sa.Boolean, nullable=False, server_default=sa.false()),
+    # False for research outside any project that the user hasn't saved: it stays in Recent research only
+    sa.Column("saved", sa.Boolean, nullable=False, server_default=sa.true()),
     sa.Column("created_at", ms),
     # Insertion order, for a stable sort among reports created in the same millisecond
     sa.Column("seq", ms, nullable=False),
@@ -399,7 +401,11 @@ def create_db_engine(url: str) -> sa.Engine:
 
 
 # Columns added after a table first shipped: (table, column, DDL type). create_all never alters existing tables.
-_ADDED_COLUMNS = [("works", "claim_evidence", "TEXT"), ("projects", "work_id", "VARCHAR(40)")]
+_ADDED_COLUMNS = [
+    ("works", "claim_evidence", "TEXT"), ("projects", "work_id", "VARCHAR(40)"),
+    # Reports from before saving existed count as saved, so nothing leaves anyone's Library
+    ("reports", "saved", "BOOLEAN NOT NULL DEFAULT TRUE"),
+]
 
 
 def init_schema(engine: sa.Engine) -> None:

@@ -197,7 +197,7 @@ export default function ProjectThread({ projectId, memberCount, legacyNotes }: P
               }
             }}
             placeholder="Message your collaborators…"
-            aria-describedby="thread-hint"
+            aria-describedby={over > 0 ? 'thread-hint' : undefined}
             aria-invalid={over > 0 || undefined}
             disabled={status !== 'ready'}
           />
@@ -205,15 +205,13 @@ export default function ProjectThread({ projectId, memberCount, legacyNotes }: P
             {sending ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}
           </button>
         </form>
-        <p className="thread-hint" id="thread-hint">
-          {over > 0 ? (
+        {over > 0 && (
+          <p className="thread-hint" id="thread-hint">
             <span className="thread-over">
               {over} characters over the {MAX_CHARS}-character limit.
             </span>
-          ) : (
-            'Enter to send, Shift+Enter for a new line.'
-          )}
-        </p>
+          </p>
+        )}
         {sendError && (
           <p className="thread-error" role="alert">
             Couldn't send: {sendError} Your message is still in the box.

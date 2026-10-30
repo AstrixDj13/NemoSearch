@@ -10,6 +10,7 @@ import {
   BookOpen,
   Bookmark,
   BookmarkCheck,
+  BookmarkX,
   BrainCircuit,
   ChartNoAxesCombined,
   Check,
@@ -43,6 +44,7 @@ import {
   ShieldCheck,
   Upload,
   UserRound,
+  Users,
   SlidersHorizontal,
   X,
 } from 'lucide-react'
@@ -61,7 +63,7 @@ import type { Me, NetworkRoute, WorkSummary } from './network'
 import RoutingEditor from './components/RoutingEditor'
 import { CoverageLog, CoverageNotice, SourceKind, SourceProvenance } from './components/SourceProvenance'
 import { isPaper, sourceOrigin } from './sources'
-import { byRecency, makeTitle, normalizeReports, reportTime, runNumbers } from './library'
+import { byRecency, makeTitle, normalizeReports, projectIdFromPath, projectPath, relativeTime, reportTime, runNumbers } from './library'
 import PaperStudio from './components/PaperStudio'
 import StudioFileTree from './components/StudioFileTree'
 import {
@@ -422,7 +424,9 @@ interface AppProps {
 }
 
 export default function App({ me, orcidBase, refreshMe }: AppProps) {
-  const [view, setView] = useState<View>(() => (routeFromPath(window.location.pathname) ? 'network' : 'home'))
+  const [view, setView] = useState<View>(() =>
+    routeFromPath(window.location.pathname) ? 'network' : projectIdFromPath(window.location.pathname) ? 'library' : 'home'
+  )
   const [networkRoute, setNetworkRoute] = useState<NetworkRoute>(() => routeFromPath(window.location.pathname) ?? { page: 'discover' })
   const [publishing, setPublishing] = useState<{ reportId?: string } | null>(null)
   const [relatedWorks, setRelatedWorks] = useState<WorkSummary[]>([])
@@ -490,6 +494,9 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [historyError, setHistoryError] = useState('')
   const [projects, setProjects] = useState<Project[]>([])
   const [scope, setScope] = useState<ResearchScope>(() => {
+    // A project's own address wins over the remembered choice
+    const fromPath = projectIdFromPath(window.location.pathname)
+    if (fromPath) return fromPath
     try {
       return localStorage.getItem('nemosearch_scope') || 'all'
     } catch {
@@ -504,8 +511,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
   const dialogOpener = useRef<HTMLElement | null>(null)
   const [activeReportId, setActiveReportId] = useState<string | null>(null)
+  // The Library page a report was opened from (which project, how far down), so the report can lead back to it
+  const [reportReturn, setReportReturn] = useState<{ scope: ResearchScope; scrollY: number } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; place: 'sidebar' | 'library' } | null>(null)
   const [showArchived, setShowArchived] = useState(false)
+  const [showArchivedProjects, setShowArchivedProjects] = useState(false)
   // Re-renders relative timestamps ("5m ago") once a minute
   const [now, setNow] = useState(() => Date.now())
 
@@ -628,6 +638,8 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
       const [reports, projectList] = await Promise.all([api.listReports('all'), api.listProjects()])
       setLibraryReports(reports)
       setProjects(projectList)
+      // A project you were removed from, or a link to one you can't open, falls back to the whole Library
+      setScope((s) => (s === 'all' || s === 'unassigned' || projectList.some((p) => p.id === s) ? s : 'all'))
       setHistoryStatus('ready')
     } catch (e) {
       setHistoryError((e as Error).message)
@@ -665,18 +677,29 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   useEffect(() => {
     const onPop = () => {
       const route = routeFromPath(window.location.pathname)
+      const projectId = projectIdFromPath(window.location.pathname)
       if (route) {
         setNetworkRoute(route)
         setView('network')
-      } else setView((current) => (current === 'network' ? 'home' : current))
+      } else if (projectId) {
+        changeScopeRef.current(projectId)
+        setView('library')
+      } else {
+        setView((current) => (current === 'network' ? 'home' : current))
+        // Back from a project lands on the whole Library
+        setScope((s) => (s === 'all' || s === 'unassigned' ? s : 'all'))
+      }
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  // An open project has its own address (so Back, refresh and links work); every other non-Network view lives at /
   useEffect(() => {
-    if (view !== 'network' && window.location.pathname.startsWith('/network')) window.history.pushState(null, '', '/')
-  }, [view])
+    if (view === 'network') return
+    const path = view === 'library' && scope !== 'all' && scope !== 'unassigned' ? projectPath(scope) : '/'
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+  }, [view, scope])
 
   const navigate = (nextView: View) => {
     if (nextView === 'network') return navigateNetwork(networkRoute)
@@ -743,6 +766,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
       { name: 'Critic', model: modelLabel(teamModels.critic), detail: 'Queued to verify coverage & close gaps...' },
       { name: 'Lead analyst', model: modelLabel(teamModels.writer), detail: 'Queued for rigorous cited synthesis...' },
     ])
+    setReportReturn(null) // a new run was not opened from the Library
     setView('running')
 
     // Connect to real FastAPI SSE endpoint
@@ -957,7 +981,26 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     setReportTab('brief')
     setThread((saved?.followups ?? []).map((turn) => ({ ...turn, status: 'done' as const })))
     setSidebarOpen(false)
+    // Opened from the Library: remember the page; from another report: keep where that one came from
+    const from = view === 'library' ? { scope, scrollY: window.scrollY } : null
+    setReportReturn((prev) => (view === 'report' ? prev : from))
     setView('report')
+    window.scrollTo(0, 0)
+  }
+
+  const backToLibrary = () => {
+    if (!reportReturn) return
+    const { scope: target, scrollY } = reportReturn
+    const reportId = activeReportId
+    changeScope(target)
+    setView('library')
+    // Once the Library has rendered: back to the same spot, with focus on the report you were reading
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        window.scrollTo(0, scrollY)
+        document.querySelector<HTMLElement>(`.library-list [data-report-id="${reportId}"] .report-open`)?.focus({ preventScroll: true })
+      })
+    )
   }
 
   const updateReport = (id: string, patch: Partial<SavedReport>) =>
@@ -967,14 +1010,28 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-report-id="${id}"] .report-open`)?.focus())
 
   // Optimistic update on the server; restores the previous values and reports the error if it fails
-  const patchReport = (report: SavedReport, patch: { title?: string; archived?: boolean }) => {
+  const patchReport = (report: SavedReport, patch: { title?: string; archived?: boolean; saved?: boolean }) => {
     updateReport(report.id, patch)
     return api.updateReport(report.id, patch).catch((e: Error) => {
-      updateReport(report.id, { title: report.title, archived: report.archived })
+      updateReport(report.id, { title: report.title, archived: report.archived, saved: report.saved })
       notify(`Couldn't update “${report.title}”: ${e.message}`, undefined, 'error')
       throw e
     })
   }
+
+  // Research outside a project only joins the Library when saved; in a project it always belongs there
+  const canSave = (report: SavedReport) => report.mine !== false && !report.projectId && report.hasReport !== false
+
+  const setSaved = (report: SavedReport, saved: boolean) =>
+    // Removed research leaves the Library entirely, archive included, and goes back to Recent research
+    patchReport(report, saved ? { saved } : { saved, archived: false })
+      .then(() =>
+        notify(
+          saved ? `Saved “${report.title}” to your Library.` : `Removed “${report.title}” from your Library. It stays in Recent research.`,
+          saved ? { label: 'Open Library', run: () => { changeScope('all'); navigate('library') } } : undefined
+        )
+      )
+      .catch(() => undefined)
 
   const finishRename = (report: SavedReport, value: string | null) => {
     const title = value?.trim().replace(/\s+/g, ' ')
@@ -1045,6 +1102,15 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     setScope(next)
     // New research follows the project you are looking at
     setRunProject(next !== 'all' && next !== 'unassigned' && !projects.find((p) => p.id === next)?.archived ? next : '')
+  }
+  // The Back-button listener is registered once; this keeps it on the current project list
+  const changeScopeRef = useRef(changeScope)
+  changeScopeRef.current = changeScope
+
+  const openProject = (projectId: string) => {
+    changeScope(projectId)
+    navigate('library')
+    window.scrollTo(0, 0)
   }
 
   const submitProjectDialog = async (name: string, description: string) => {
@@ -1180,14 +1246,22 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
     report.mine !== false || projects.find((p) => p.id === report.projectId)?.role === 'owner'
 
   const reportActions = (report: SavedReport, place: 'sidebar' | 'library') => canManage(report) ? [
+    ...(canSave(report)
+      ? [report.saved === false
+          ? { label: 'Add to my Library', icon: Bookmark, onSelect: () => setSaved(report, true) }
+          : { label: 'Remove from Library', icon: BookmarkX, onSelect: () => setSaved(report, false) }]
+      : []),
     { label: 'Rename', icon: Pencil, onSelect: () => setRenaming({ id: report.id, place }) },
     { label: 'Duplicate', icon: CopyPlus, onSelect: () => duplicateReport(report) },
     ...(report.mine !== false && report.hasReport !== false
       ? [{ label: 'Publish to Network', icon: Upload, onSelect: () => setPublishing({ reportId: report.id }) }]
       : []),
-    report.archived
-      ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
-      : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) },
+    // Archiving belongs to the Library; unsaved research isn't in it yet
+    ...(report.saved === false
+      ? []
+      : [report.archived
+          ? { label: 'Unarchive', icon: ArchiveRestore, onSelect: () => archiveReport(report, false) }
+          : { label: 'Archive', icon: Archive, onSelect: () => archiveReport(report, true) }]),
     { label: 'Delete', icon: Trash2, onSelect: () => deleteReport(report), separated: true },
   ] : [{ label: 'Duplicate to my research', icon: CopyPlus, onSelect: () => duplicateReport(report) }]
 
@@ -1474,36 +1548,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
   const isSampleReport = !isLiveRun && submittedQuery === SAMPLE_QUERY
 
-  const scopeSelect = (id: string, className: string) => (
-    <label className={className} htmlFor={id}>
-      <span className="visually-hidden">Show research from</span>
-      <select id={id} value={scope} onChange={(event) => changeScope(event.target.value)}>
-        <option value="all">All research</option>
-        <option value="unassigned">Unassigned</option>
-        {activeProjects.length > 0 && (
-          <optgroup label="Projects">
-            {activeProjects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.role === 'member' ? ` (shared by ${p.owner?.name ?? 'a collaborator'})` : ''}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {archivedProjects.length > 0 && (
-          <optgroup label="Archived projects">
-            {archivedProjects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} (archived)
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-      <ChevronDown size={13} aria-hidden="true" />
-    </label>
-  )
-
   const toastView = (
     <div className={`toast ${toastTone}`}>
       {toastTone === 'error' ? <AlertTriangle size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
@@ -1578,8 +1622,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
   const runNumber = runNumbers(visibleReports)
   const matchesFilter = (report: SavedReport) =>
     `${report.title} ${report.question ?? ''}`.toLowerCase().includes(libraryFilter.toLowerCase())
-  const filteredReports = visibleReports.filter(matchesFilter)
-  const filteredArchived = archivedReports.filter(matchesFilter)
+  // The Library lists saved research; unsaved runs stay in Recent research until saved
+  const inLibrary = (r: SavedReport) => r.saved !== false
+  const filteredReports = visibleReports.filter(inLibrary).filter(matchesFilter)
+  const libraryArchived = archivedReports.filter(inLibrary)
+  const filteredArchived = libraryArchived.filter(matchesFilter)
   // Paper Studio Overleaf file tree state in left sidebar
   const [studioActiveFile, setStudioActiveFile] = useState<string>('main.tex')
 
@@ -1625,7 +1672,11 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
           <button
             type="button"
             className={view === 'library' ? 'active' : ''}
-            onClick={() => navigate('library')}
+            onClick={() => {
+              // Library always opens on the whole Library; projects are one click away from there
+              changeScope('all')
+              navigate('library')
+            }}
             title="Library"
           >
             <Library size={17} /> <span className="nav-label">Library</span>
@@ -1667,7 +1718,6 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 <FolderPlus size={15} aria-hidden="true" />
               </button>
             </div>
-            {scopeSelect('sidebar-scope', 'scope-select')}
             <div className="recent-scroll">
               {historyStatus === 'loading' ? (
                 <p className="recent-empty">Loading your research…</p>
@@ -2003,23 +2053,34 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'report' && (
             <section className="report-view">
-              <div className="report-topline">
-                <button type="button" className="text-back" onClick={newResearch}>
-                  <Plus size={16} /> New research
+              {reportReturn && (
+                <button type="button" className="library-back" onClick={backToLibrary}>
+                  <ArrowLeft size={15} aria-hidden="true" />{' '}
+                  {projects.find((p) => p.id === reportReturn.scope)?.name ??
+                    (reportReturn.scope === 'unassigned' ? 'Unassigned research' : 'Library')}
                 </button>
-                <span className="sample-notice">
-                  {isSampleReport
-                    ? 'Illustrative report · Preview data'
-                    : coverageIncomplete
-                      ? 'Live briefing · Partial coverage'
-                      : 'Verified Evidence · Live Briefing'}
-                </span>
-              </div>
+              )}
               <div className="report-title-block">
+                {/* Only the sample report says anything extra up here: that its data is not real */}
                 <div className="section-label">
                   Research brief / {focusOptions.find((option) => option.id === focusMode)?.label}
+                  {isSampleReport && ' · Sample with preview data'}
                 </div>
-                <h1>{submittedQuery}</h1>
+                <div className="report-title-row">
+                  <h1>{submittedQuery}</h1>
+                  {isLiveRun && activeReport && canSave(activeReport) && (
+                    <button
+                      type="button"
+                      className={`secondary-button report-save ${activeReport.saved === false ? '' : 'saved'}`}
+                      aria-pressed={activeReport.saved !== false}
+                      onClick={() => setSaved(activeReport, activeReport.saved === false)}
+                      title={activeReport.saved === false ? 'Save to your Library' : 'Saved in your Library. Click to remove it.'}
+                    >
+                      {activeReport.saved === false ? <Bookmark size={16} aria-hidden="true" /> : <BookmarkCheck size={16} aria-hidden="true" />}
+                      {activeReport.saved === false ? 'Save' : 'Saved'}
+                    </button>
+                  )}
+                </div>
                 {/* Stats and actions share one wrapping row; the actions drop below when the row is too narrow */}
                 <div className="report-title-foot">
                   <div className="report-meta">
@@ -2318,17 +2379,22 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'library' && (
             <section className="library-view">
+              {scope !== 'all' && (
+                <button type="button" className="library-back" onClick={() => openProject('all')}>
+                  <ArrowLeft size={15} aria-hidden="true" /> Library
+                </button>
+              )}
               <div className="page-heading">
                 <div>
-                  {/* Only status worth stating gets a label above the title; a plain project has none */}
-                  {scopeProject && (scopeProject.archived || scopeProject.role === 'member') && (
-                    <div className="section-label">
-                      {scopeProject.archived ? 'Archived project' : `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}`}
-                    </div>
-                  )}
                   {scopeProject ? (
                     <>
                       <h1 className="project-title">{scopeProject.name}</h1>
+                      {/* Only status worth stating gets a line under the title; a plain project has none */}
+                      {(scopeProject.archived || scopeProject.role === 'member') && (
+                        <p className="project-status">
+                          {scopeProject.archived ? 'Archived project' : `Shared by ${scopeProject.owner?.name ?? 'a collaborator'}`}
+                        </p>
+                      )}
                       {/* A collaboration's header already says what it is about */}
                       {scopeProject.description && !(scopeProject.work && scopeProject.description.startsWith('Shared through NemoSearch Network')) && (
                         <p className="project-description">{scopeProject.description}</p>
@@ -2358,11 +2424,65 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                   }}
                 />
               )}
-              <p className="library-storage">
-                Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
-              </p>
+              {scope === 'all' && (
+                <p className="library-storage">
+                  Private to you and anyone you share a project with. Nothing here is published unless you publish it to Network.
+                </p>
+              )}
+              {scope === 'all' && (
+                <section className="project-cards" aria-labelledby="project-cards-title">
+                  <div className="project-cards-head">
+                    <h2 id="project-cards-title" className="section-label">
+                      Projects
+                    </h2>
+                    {/* What the old dropdown also reached: research outside any project, and archived projects */}
+                    <button type="button" className="text-link" onClick={() => openProject('unassigned')}>
+                      Unassigned research
+                    </button>
+                    {archivedProjects.length > 0 && (
+                      <button
+                        type="button"
+                        className="text-link"
+                        aria-expanded={showArchivedProjects}
+                        onClick={() => setShowArchivedProjects(!showArchivedProjects)}
+                      >
+                        {showArchivedProjects ? 'Hide archived' : `Archived · ${archivedProjects.length}`}
+                      </button>
+                    )}
+                  </div>
+                  <ul>
+                    {[...activeProjects, ...(showArchivedProjects ? archivedProjects : [])].map((p) => {
+                      const shared = p.role === 'member' || p.counts.members > 0
+                      return (
+                        <li key={p.id}>
+                          <button type="button" className={`project-card ${p.archived ? 'archived' : ''}`} onClick={() => openProject(p.id)}>
+                            <span className="project-card-kind">
+                              {p.archived ? <Archive size={14} aria-hidden="true" /> : shared ? <Users size={14} aria-hidden="true" /> : <FolderOpen size={14} aria-hidden="true" />}
+                              {p.archived
+                                ? 'Archived'
+                                : p.role === 'member'
+                                ? `Shared by ${p.owner?.name ?? 'a collaborator'}`
+                                : p.counts.members > 0
+                                  ? `Shared with ${p.counts.members} ${p.counts.members === 1 ? 'person' : 'people'}`
+                                  : 'Only you'}
+                            </span>
+                            <strong>{p.name}</strong>
+                            <small>
+                              {p.counts.reports} research {p.counts.reports === 1 ? 'run' : 'runs'} · {relativeTime(p.updatedAt, now)}
+                            </small>
+                          </button>
+                        </li>
+                      )
+                    })}
+                    <li>
+                      <button type="button" className="project-card project-card-new" onClick={() => openProjectDialog({ mode: 'create' })}>
+                        <Plus size={16} aria-hidden="true" /> New project
+                      </button>
+                    </li>
+                  </ul>
+                </section>
+              )}
               <div className="library-toolbar">
-              {scopeSelect('library-scope', 'scope-select library-scope')}
               <div className="library-search">
                 <Search size={18} />
                 <input
@@ -2389,10 +2509,14 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 {filteredReports.map((report, index) => libraryRow(report, index))}
                 {filteredReports.length === 0 && (
                   <div className="library-empty">
-                    {libraryFilter ? `No research matches “${libraryFilter}”.` : 'No research yet. Start a run to build your library.'}
+                    {libraryFilter
+                      ? `No research matches “${libraryFilter}”.`
+                      : scopeProject
+                        ? 'No research in this project yet.'
+                        : 'Nothing saved yet. Use Save on a report, or “Add to my Library” in Recent research, to keep it here.'}
                   </div>
                 )}
-                {archivedReports.length > 0 && (
+                {libraryArchived.length > 0 && (
                   <div className="library-archived">
                     <button
                       type="button"
@@ -2401,7 +2525,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                       aria-controls="library-archived-list"
                       onClick={() => setShowArchived(!showArchived)}
                     >
-                      <Archive size={15} aria-hidden="true" /> Archived · {archivedReports.length}
+                      <Archive size={15} aria-hidden="true" /> Archived · {libraryArchived.length}
                       <ChevronDown size={14} aria-hidden="true" className={showArchived ? 'flipped' : ''} />
                     </button>
                     {showArchived && (
@@ -2435,8 +2559,7 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
                 openProject: (projectId) => {
                   refreshProjects()
                   loadHistory()
-                  changeScope(projectId)
-                  navigate('library')
+                  openProject(projectId)
                 },
                 orcidBase,
               }}
