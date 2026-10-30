@@ -25,7 +25,8 @@ DEFAULT_MODELS = {
     "super": "nvidia/nemotron-3-super-120b-a12b",
     "ultra": "nvidia/Nemotron-3-Ultra-550b-a55b",
 }
-ROLE_KEYWORDS = {"nano": ["nano"], "super": ["super"], "ultra": ["ultra"]}
+# Fallbacks when a model leaves the catalog; Nebius replaces Nemotron 3 Nano with Nemotron 3.5 Lightning
+ROLE_KEYWORDS = {"nano": ["nano", "lightning"], "super": ["super"], "ultra": ["ultra"]}
 # Pipeline step -> model tier used when the user keeps the recommended routing
 STEP_ROLES = {"planner": "nano", "reader": "super", "critic": "nano", "writer": "ultra"}
 # Routing presets offered in the UI; "balanced" is the recommended default
