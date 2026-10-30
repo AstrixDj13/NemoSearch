@@ -5,7 +5,6 @@ custom template installation, and complete publication-grade LaTeX paper compila
 from __future__ import annotations
 
 import io
-import json
 import logging
 import re
 import zipfile
@@ -155,199 +154,227 @@ def get_all_templates(custom: list[dict[str, Any]] | None = None) -> list[dict[s
     ]
 
 
-async def generate_latex_paper(
-    topic: str,
-    report: str,
-    sources: list[dict[str, Any]] | dict[int | str, Any],
-    template_id: str,
-    llm: LLM,
-    custom_preamble: str = "",
-    custom_templates: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Use Nemotron Ultra 550B to write a complete academic LaTeX paper grounded in verified sources."""
-    stats = RunStats()
+def _paper_meta(s: dict[str, Any]) -> dict[str, Any]:
+    return s.get("paper") if isinstance(s.get("paper"), dict) else {}
 
-    # Resolve template
-    tpl = {t["id"]: t for t in custom_templates or []}.get(template_id) or TEMPLATES.get(template_id) or TEMPLATES["neurips"]
-    doc_class = tpl["doc_class"]
-    preamble = custom_preamble if custom_preamble.strip() else tpl["preamble"]
-    bib_style = tpl.get("bib_style", "\\bibliographystyle{unsrt}\n\\bibliography{references}")
 
-    # Normalize sources and build BibTeX library
-    src_list: list[dict[str, Any]] = []
-    if isinstance(sources, dict):
-        src_list = list(sources.values())
-    elif isinstance(sources, list):
-        src_list = sources
+def _bib_escape(text: str) -> str:
+    return re.sub(r"(?<!\\)([&%#_])", r"\\\1", " ".join(str(text).split()))
 
-    bib_entries: list[str] = []
-    evidence_blocks: list[str] = []
 
+def cite_library(sources: list[dict[str, Any]] | dict[Any, Any]) -> list[dict[str, Any]]:
+    """Gives every source one stable citation key and BibTeX entry. Drafting and every later revision use the
+    same keys, so a key the text cites always exists in references.bib."""
+    src_list = list(sources.values()) if isinstance(sources, dict) else list(sources or [])
+    out: list[dict[str, Any]] = []
+    used: set[str] = set()
     for idx, s in enumerate(src_list, start=1):
-        bib_key = s.get("bib_key")
-        if not bib_key:
-            first_author = s.get("authors") or s.get("domain") or "ref"
-            first_author = re.sub(r"[^a-zA-Z]", "", first_author.split()[0]).lower() or f"ref{idx}"
-            bib_key = f"{first_author}{idx}"
+        if not isinstance(s, dict):
+            continue
+        meta = _paper_meta(s)
+        authors = ", ".join(meta.get("authors") or []) or s.get("authors") or ""
+        year = meta.get("year") or s.get("year") or ""
+        key = s.get("bib_key") or ""
+        if not key:
+            surname = re.sub(r"[^a-zA-Z]", "", (authors.split(",")[0].split() or ["ref"])[-1]).lower() or "ref"
+            key = f"{surname}{year or ''}{'' if year else idx}"
+        base, n = key, 2
+        while key in used:
+            key, n = f"{base}{chr(ord('a') + n - 2)}", n + 1
+        used.add(key)
+        title = s.get("title") or "Untitled source"
+        url = s.get("url") if s.get("url") not in (None, "#") else ""
+        doi = meta.get("doi") or s.get("doi") or ""
+        venue = meta.get("venue") or s.get("venue") or s.get("domain") or ""
+        bibtex = s.get("bibtex") or "\n".join(
+            [f"@{'article' if meta else 'misc'}{{{key},", f"  title     = {{{{{_bib_escape(title)}}}}},"]
+            + ([f"  author    = {{{_bib_escape(authors.replace(', ', ' and '))}}},"] if authors else [])
+            + ([f"  year      = {{{year}}},"] if year else [])
+            + ([f"  journal   = {{{_bib_escape(venue)}}},"] if meta and venue else [])
+            + ([f"  doi       = {{{doi}}},"] if doi else [])
+            + ([f"  url       = {{{url}}},"] if url else [])
+            + ["}"]
+        )
+        evidence = s.get("quote") or s.get("summary") or s.get("snippet") or ""
+        out.append({"key": key, "title": title, "authors": authors, "year": year, "bibtex": bibtex,
+                    "evidence": " ".join(str(evidence).split())})
+    return out
 
-        title = s.get("title") or "Scholarly Article"
-        authors = s.get("authors") or s.get("domain") or "Research Team"
-        quote = s.get("quote") or s.get("snippet") or s.get("summary") or ""
-        url = s.get("url") or ""
 
-        bib_text = s.get("bibtex")
-        if not bib_text:
-            bib_text = f"""@article{{{bib_key},
-  title     = {{{title}}},
-  author    = {{{authors}}},
-  year      = {{2024}},
-  url       = {{{url}}}
-}}"""
-        bib_entries.append(bib_text)
-        evidence_blocks.append(f"[{idx}] Citation Key: \\cite{{{bib_key}}}\nTitle: {title}\nAuthor: {authors}\nVerbatim Evidence: {quote}\n")
-
-    bibtex_combined = "\n\n".join(bib_entries)
-    evidence_prompt_text = "\n".join(evidence_blocks[:15])
-
-    sys = (
-        "You are an elite academic professor and lead researcher publishing in top scientific venues (NeurIPS, ICML, IEEE, Nature).\n"
-        "Write a complete, mathematically rigorous, publication-grade academic research paper in standard LaTeX format.\n"
-        "MANDATORY REQUIREMENTS:\n"
-        "1. Structure your output with standard sections:\n"
-        "   - \\title{...}, \\author{NemoSearch Autonomous Research Engine \\\\ \\texttt{research@nemosearch.ai}}\n"
-        "   - \\begin{abstract} ... \\end{abstract}\n"
-        "   - \\section{Introduction} (Problem statement, motivations, and itemized contributions)\n"
-        "   - \\section{Related Work} (Thorough comparison with cited literature using \\cite{key})\n"
-        "   - \\section{Theoretical Formulation and Methodology} (Include formal LaTeX mathematical equations \\begin{equation} ... \\end{equation} or algorithm definitions)\n"
-        "   - \\section{Analytical Findings and Evaluation} (Synthesize quantitative evidence, include a neat LaTeX table comparing approaches or metrics)\n"
-        "   - \\section{Discussion, Limitations, and Open Problems} (Address critical trade-offs and research frontiers)\n"
-        "   - \\section{Conclusion}\n"
-        "2. CITATIONS: Use ONLY the provided Citation Keys (e.g., \\cite{key}) to ground all claims.\n"
-        "3. Output ONLY the LaTeX code from \\title{...} to \\end{document}. Do NOT wrap with markdown backticks."
+def _evidence_text(library: list[dict[str, Any]], limit: int = 20, chars: int = 600) -> str:
+    if not library:
+        return "(No sources were saved with this research. Do not cite anything.)"
+    return "\n".join(
+        f"\\cite{{{c['key']}}}: {c['title']}" + (f" — {c['authors'][:120]}" if c["authors"] else "")
+        + (f" ({c['year']})" if c["year"] else "") + (f"\n  Evidence: {c['evidence'][:chars]}" if c["evidence"] else "")
+        for c in library[:limit]
     )
 
-    user = f"""RESEARCH TOPIC:
-{topic}
 
-SYNTHESIZED RESEARCH BRIEF:
-{report[:3500]}
+def _latex_escape(text: str) -> str:
+    return re.sub(r"([&%$#_{}])", r"\\\1", " ".join(str(text).split()))
 
-VERIFIED SCHOLARLY EVIDENCE AND CITATION KEYS:
-{evidence_prompt_text}
 
-TARGET VENUE / TEMPLATE:
-{tpl['name']} ({tpl.get('venue', '')})
+def author_block(authors: list[dict[str, str]]) -> str:
+    """The \\author{...} block for the people writing the paper (the account, or the project's members)."""
+    rows = [_latex_escape(a["name"]) + (f"\\\\\n  {_latex_escape(a['affiliation'])}" if a.get("affiliation") else "")
+            for a in authors if a.get("name")]
+    return "\\author{\n  " + ("\n  \\and\n  ".join(rows) or "Anonymous Authors") + "\n}"
 
-Write the complete paper now in LaTeX."""
 
-    def mock_paper() -> str:
-        first_key = "ref1" if not bib_entries else re.search(r"@\w+\{([^,]+),", bib_entries[0]).group(1)
-        return f"""\\title{{{topic}: An Analytical Survey and Methodological Framework}}
-\\author{{
-  NemoSearch Autonomous Research Group\\\\
-  Nebius AI Cloud \\& NVIDIA Nemotron Ensemble\\\\
-  \\texttt{{research@nemosearch.ai}}
-}}
-\\date{{\\today}}
+def _materials(g: dict[str, Any], library: list[dict[str, Any]], brief_chars: int) -> str:
+    """Everything that fixes what the paper is about, in the order the model should read it."""
+    parts = [f"RESEARCH QUESTION (what the authors asked NemoSearch):\n{g['question'] or g['title']}"]
+    if g.get("context"):
+        parts.append(f"PROJECT CONTEXT (the project this paper belongs to):\n{g['context']}")
+    brief = (g.get("brief") or "").strip()
+    parts.append("RESEARCH BRIEF (NemoSearch's verified answer to the question; the paper's main material):\n"
+                 + (brief[:brief_chars] if brief else "(No brief was saved. Write only what the sources support.)"))
+    parts.append(f"SOURCES AND THEIR CITATION KEYS (cite only these keys):\n{_evidence_text(library)}")
+    return "\n\n".join(parts)
 
-\\maketitle
 
-\\begin{{abstract}}
-In this work, we present a comprehensive analytical investigation into \\textbf{{{topic}}}. Driven by recent theoretical advancements and empirical breakthroughs, we synthesize foundational principles, systematically evaluate serving and algorithmic constraints, and introduce a formalized methodological architecture. Grounded in primary empirical literature \\cite{{{first_key}}}, our analysis demonstrates the trade-offs between parameter efficiency, routing complexity, and compute allocation across high-throughput workloads.
-\\end{{abstract}}
+GROUNDING_RULES = (
+    "The paper's subject is fixed by the RESEARCH QUESTION, the PROJECT CONTEXT (when given) and the RESEARCH BRIEF. "
+    "Every section must be about that subject. Never bring in fields, methods or examples that those materials do not mention.\n"
+    "- If the question says \"this paper\" or \"this project\", it means the paper or project described in PROJECT CONTEXT. "
+    "The new paper builds on that work; it is not a copy of it.\n"
+    "- Support claims with the brief and the sources, citing them as \\cite{key} with only the listed keys.\n"
+    "- Never invent results, numbers, datasets, experiments, benchmarks, equations of a method nobody proposed, or quotes. "
+    "When the materials contain no experiments, write a review or position paper; a table is only for facts taken from the "
+    "sources (for example comparing the cited studies).\n"
+    "- Where the authors' own input is needed (their data, their results, a figure), leave a clearly marked "
+    "\\textbf{[TODO: ...]} placeholder instead of making it up."
+)
 
-\\section{{Introduction}}
-Recent developments in large-scale computational systems have accelerated interest in {topic}. Traditional paradigms often assume uniform scaling dynamics; however, real-world deployment across distributed clusters introduces heterogeneous bottlenecks in memory bandwidth, IO latency, and synchronization overhead \\cite{{{first_key}}}.
 
-Our primary contributions are threefold:
-\\begin{{itemize}}
-  \\item We conduct a rigorous synthesis of current empirical literature addressing {topic}.
-  \\item We formalize the operational trade-offs through a closed-form analytical model.
-  \\item We identify critical limitations and articulate concrete frontiers for future autonomous systems.
-\\end{{itemize}}
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    return re.sub(r"\s*```$", "", text).strip()
 
-\\section{{Related Work}}
-Scholarly exploration in this domain traces back to foundational architectures \\cite{{{first_key}}}. Recent studies emphasize IO-awareness, communication-efficient parallelization, and adaptive gating networks. Unlike prior static reviews, our investigation directly couples theoretical bounds with hardware-level metrics.
 
-\\section{{Methodological Formulation}}
-Let $\\mathcal{{M}}$ represent the inference system parameterized by $\\theta \\in \\mathbb{{R}}^D$. The effective computational cost per input token $x$ is defined as:
-\\begin{{equation}}
-  \\mathcal{{C}}(x) = \\sum_{{k=1}}^{{K}} g_k(x) \\cdot \\Phi_k(x; \\theta_k) + \\Omega(\\text{{routing}}),
-\\end{{equation}}
-where $g_k(x) \\in [0, 1]$ represents the top-$k$ gating routing probability and $\\Omega$ models the interconnect communication penalty.
+def _body_only(text: str) -> str:
+    """The part between \\begin{document} and \\end{document} when a model wrote a whole document anyway."""
+    m = re.search(r"\\begin\{document\}(.*?)(?:\\end\{document\}|\Z)", text, re.DOTALL)
+    body = m.group(1) if m else text
+    body = re.sub(r"\\bibliographystyle\{[^}]*\}|\\bibliography\{[^}]*\}", "", body)
+    return body.strip()
 
-\\section{{Empirical Evaluation and Comparative Analysis}}
-Table~\\ref{{tab:comparison}} outlines the comparative performance characteristics synthesized across verified benchmark records.
 
-\\begin{{table}}[h]
-\\centering
-\\caption{{Synthesized Performance Metrics Across Computational Modalities}}
-\\label{{tab:comparison}}
-\\begin{{tabular}}{{lcccc}}
-\\toprule
-\\textbf{{Architecture}} & \\textbf{{Active FLOPs}} & \\textbf{{Routing Overhead}} & \\textbf{{Memory Bound}} \\\\
-\\midrule
-Dense Baseline          & $1.0\\times$ & $0\\%$   & Predictable \\\\
-Sparse Routing (MoE)   & $0.28\\times$ & $14\\%$ & Interconnect \\\\
-IO-Aware Adaptive       & $0.32\\times$ & $6\\%$  & Cache-Optimized \\\\
-\\bottomrule
-\\end{{tabular}}
-\\end{{table}}
+def assemble(tpl: dict[str, Any], body: str) -> str:
+    bib_style = tpl.get("bib_style", "\\bibliographystyle{unsrt}\n\\bibliography{references}")
+    return f"{tpl['doc_class']}\n{tpl['preamble']}\n\n\\begin{{document}}\n\n{body.strip()}\n\n{bib_style}\n\n\\end{{document}}\n"
 
-\\section{{Discussion and Limitations}}
-While theoretical savings indicate substantial efficiency improvements, practical hardware deployment must account for batch-size variations and memory bandwidth bounds \\cite{{{first_key}}}. 
 
-\\section{{Conclusion}}
-We have investigated {topic} using a multi-agent evidence synthesis pipeline. Future extensions will incorporate real-time compiler optimizations and adaptive inference routing.
-"""
+def resolve_template(template_id: str, custom_templates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {t["id"]: t for t in custom_templates or []}.get(template_id) or TEMPLATES.get(template_id) or TEMPLATES["neurips"]
 
-    raw_body = await llm.chat(
-        "ultra",
-        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
-        stats,
-        max_tokens=2800,
-        temperature=0.3,
-        mock=mock_paper,
+
+async def draft_paper(g: dict[str, Any], tpl: dict[str, Any], llm: LLM,
+                      conversation: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """Writes a full draft from the paper's grounding `g` (question, title, brief, sources, context, authors), following
+    what the authors said in the chat so far. Returns the LaTeX, the BibTeX and the co-author's questions for them."""
+    stats = RunStats()
+    library = cite_library(g["sources"])
+    authors = author_block(g["authors"])
+    system = (
+        "You are the co-author of an academic paper, writing its first draft in LaTeX for the human authors.\n"
+        + GROUNDING_RULES + "\n"
+        "Structure: \\title{...}, then the AUTHOR BLOCK exactly as given, \\maketitle, an abstract, an Introduction, sections whose "
+        "headings suit this subject, a section on limitations and open questions, and a Conclusion.\n"
+        "Output the LaTeX body only: from \\title to the end of the last section. No \\documentclass, preamble, "
+        "\\begin{document}, bibliography commands or \\end{document}, and no markdown fences.\n"
+        "After the LaTeX, on a new line, write <questions> then two or three short questions that would help the authors steer "
+        "the next revision (for example which contribution to stress, the target audience, or results of their own to add), "
+        "then </questions>."
     )
+    chat = "\n".join(f"{m['speaker']}: {m['text']}" for m in (conversation or [])[-14:])
+    directions = f"\n\nTHE AUTHORS' DIRECTIONS (their chat with you so far; follow what they asked for):\n{chat}" if chat else ""
+    user = (f"{_materials(g, library, 9000)}{directions}\n\nAUTHOR BLOCK:\n{authors}\n\n"
+            f"TARGET VENUE: {tpl['name']} ({tpl.get('venue', '')})\n\nWrite the draft now.")
 
-    clean_body = raw_body.strip()
-    if clean_body.startswith("```latex"):
-        clean_body = clean_body[8:]
-    elif clean_body.startswith("```"):
-        clean_body = clean_body[3:]
-    if clean_body.endswith("```"):
-        clean_body = clean_body[:-3]
-    clean_body = clean_body.strip()
+    def mock() -> str:
+        cites = " ".join(f"\\cite{{{c['key']}}}" for c in library[:3])
+        brief = _latex_escape((g.get("brief") or "").strip()[:900]) or "The saved research has no brief yet."
+        return (f"\\title{{{_latex_escape(g['title'])}}}\n{authors}\n\\maketitle\n\n\\begin{{abstract}}\n"
+                f"This paper reviews what is known about {_latex_escape(g['title'])}. {cites}\n\\end{{abstract}}\n\n"
+                f"\\section{{Introduction}}\n{brief}\n\n\\section{{What the Literature Shows}}\n"
+                f"The sources gathered for this question are summarised here {cites}.\n\n"
+                "\\section{Limitations and Open Questions}\n\\textbf{[TODO: the authors' own perspective]}\n\n"
+                "\\section{Conclusion}\nThe evidence above frames the next steps.\n\n"
+                "<questions>Which contribution should the paper stress? Who is the audience?</questions>")
 
-    # Strip existing documentclass/preamble if Ultra emitted it inside the body
-    if "\\documentclass" in clean_body:
-        body_match = re.search(r"\\begin\{document\}(.*?)\\end\{document\}", clean_body, re.DOTALL)
-        if body_match:
-            clean_body = body_match.group(1).strip()
-        else:
-            clean_body = re.sub(r"\\documentclass.*?\\begin\{document\}", "", clean_body, flags=re.DOTALL).strip()
-            clean_body = clean_body.replace("\\end{document}", "").strip()
-
-    # Assemble complete compilable LaTeX document
-    full_latex = f"""{doc_class}
-{preamble}
-
-\\begin{{document}}
-
-{clean_body}
-
-{bib_style}
-
-\\end{{document}}
-"""
-
+    raw = await llm.chat("ultra", [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                         stats, max_tokens=7000, temperature=0.3, mock=mock)
+    raw = _strip_fences(raw)
+    questions = ""
+    m = re.search(r"<questions>(.*?)(?:</questions>|\Z)", raw, re.DOTALL)
+    if m:
+        questions = " ".join(m.group(1).split())
+        raw = raw[:m.start()]
     return {
-        "template": tpl,
-        "topic": topic,
-        "latex": full_latex,
-        "bibtex": bibtex_combined,
+        "latex": assemble(tpl, _body_only(_strip_fences(raw))),
+        "bibtex": "\n\n".join(c["bibtex"] for c in library),
+        "questions": questions,
         "stats": stats.to_dict(),
     }
+
+
+MAX_PAPER_CHARS = 60_000
+
+
+async def coauthor_turn(g: dict[str, Any], latex: str, conversation: list[dict[str, str]], llm: LLM) -> dict[str, Any]:
+    """One reply in the shared chat. The co-author either answers or asks, or revises the paper and says what changed.
+    `conversation` is the recent chat, oldest first, as {"speaker", "text"}. Returns {"reply", "latex" (None when
+    the paper was not changed)}."""
+    stats = RunStats()
+    library = cite_library(g["sources"])
+    names = ", ".join(a["name"] for a in g["authors"] if a.get("name")) or "the authors"
+    system = (
+        f"You are the co-author in a live writing session with the human authors of a LaTeX paper ({names}). "
+        "They talk to you, and to each other, in a shared chat; the newest message is the one to act on.\n"
+        + GROUNDING_RULES + "\n"
+        "Each turn, do one of these:\n"
+        "- When the request is clear, revise the paper and say in a sentence or two what you changed.\n"
+        "- When it is ambiguous, or needs something only the authors know (their results, data, framing), ask one short, "
+        "specific question instead of guessing. Also ask when authors disagree, naming who said what.\n"
+        "- When they only ask a question, answer it from the paper and the materials.\n"
+        "Keep the preamble, the author block and existing citations unless asked otherwise, and change only what the request needs.\n"
+        + ("Nothing is drafted yet, so do not write the paper. Agree on the plan with the authors (focus, angle, audience, "
+           "anything of their own to include) and tell them to select Draft paper when they are ready.\n"
+           if not latex.strip() else "")
+        + "Output format, exactly:\n<reply>your chat message (plain text, no LaTeX, a few sentences at most)</reply>\n"
+        "and only if you changed the paper, after it:\n<latex>the COMPLETE updated document from \\documentclass to "
+        "\\end{document}</latex>"
+    )
+    chat = "\n".join(f"{m['speaker']}: {m['text']}" for m in conversation[-14:])
+    user = (f"{_materials(g, library, 6000)}\n\nCURRENT PAPER:\n{latex[:MAX_PAPER_CHARS] or '(empty: nothing drafted yet)'}"
+            f"\n\nCHAT SO FAR (oldest first):\n{chat}")
+
+    def mock() -> str:
+        last = conversation[-1]["text"] if conversation else ""
+        if not latex.strip() or last.rstrip().endswith("?"):
+            return f"<reply>About \"{last[:80]}\": the brief covers this; tell me which section you'd like it in.</reply>"
+        revised = latex.replace("\\section{Conclusion}", f"% Revised: {last[:80]}\n\\section{{Conclusion}}", 1)
+        return f"<reply>Done: I worked \"{last[:80]}\" into the paper before the conclusion.</reply>\n<latex>{revised}</latex>"
+
+    raw = await llm.chat("ultra", [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                         stats, max_tokens=12000, temperature=0.3, mock=mock)
+    reply_m = re.search(r"<reply>(.*?)(?:</reply>|<latex>|\Z)", raw, re.DOTALL)
+    latex_m = re.search(r"<latex>(.*?)(?:</latex>|\Z)", raw, re.DOTALL)
+    reply = (reply_m.group(1) if reply_m else re.sub(r"<latex>.*", "", raw, flags=re.DOTALL)).strip()
+    new_latex = None
+    if latex_m:
+        candidate = _strip_fences(latex_m.group(1))
+        if "\\end{document}" not in candidate or "\\begin{document}" not in candidate:
+            # A revision cut off by the length limit would silently drop the end of the paper
+            reply = (reply + "\n\n" if reply else "") + ("My revision was cut off before the end of the paper, so I didn't "
+                                                         "apply it. Ask for a smaller change, or one section at a time.")
+        elif latex.strip() and candidate.strip() != latex.strip():  # before a draft, Draft paper writes it
+            new_latex = candidate.strip() + "\n"
+    return {"reply": reply or "I couldn't produce an answer to that. Could you rephrase it?", "latex": new_latex,
+            "stats": stats.to_dict()}
 
 
 def create_latex_zip(topic: str, latex_content: str, bibtex_content: str) -> bytes:
@@ -380,16 +407,14 @@ pdflatex main.tex
 Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'.
 """
 
-    # Section modular helpers
-    def extract_section(name: str, fallback: str) -> str:
-        pattern = rf"(\\section\{{{name}\}}[\s\S]*?)(?=\\section\{{|\\bibliography|\Z)"
-        m = re.search(pattern, latex_content, re.IGNORECASE)
-        return m.group(1).strip() if m else fallback
+    # sections/ holds the paper's first four sections in order, whatever their headings
+    found = re.findall(r"(\\section\*?\{[\s\S]*?)(?=\\section\*?\{|\\bibliographystyle|\\bibliography\{|\\end\{document\}|\Z)",
+                       latex_content)
 
-    intro_sec = extract_section("Introduction", f"% Introduction for {topic}\n\\section{{Introduction}}\nThis paper investigates {topic}.")
-    related_sec = extract_section("Related Work", f"% Related Work for {topic}\n\\section{{Related Work}}\nWe review prior foundational literature.")
-    method_sec = extract_section("Theoretical Formulation and Methodology", f"% Methodology for {topic}\n\\section{{Theoretical Formulation and Methodology}}\nWe formalize the mathematical framework.")
-    exp_sec = extract_section("Analytical Findings and Evaluation", f"% Evaluation for {topic}\n\\section{{Analytical Findings and Evaluation}}\nEmpirical results across benchmark suites.")
+    def nth_section(i: int) -> str:
+        return found[i].strip() if i < len(found) else f"% This paper has fewer than {i + 1} sections.\n"
+
+    intro_sec, related_sec, method_sec, exp_sec = (nth_section(i) for i in range(4))
 
     sty_content = """% Standard NeurIPS Conference Package
 \\NeedsTeXFormat{LaTeX2e}
@@ -413,97 +438,3 @@ Or drag this zip file directly into Overleaf via 'New Project -> Upload Project'
 
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
-
-
-async def refine_latex_paper(
-    topic: str,
-    current_latex: str,
-    instruction: str,
-    sources: list[dict[str, Any]] | dict[int | str, Any],
-    llm: LLM,
-    report: str = "",
-) -> dict[str, Any]:
-    """Human-in-the-loop AI Co-Author: Intelligently expands, modifies, or writes sections of the paper based on researcher guidance."""
-    stats = RunStats()
-
-    src_list: list[dict[str, Any]] = []
-    if isinstance(sources, dict):
-        src_list = list(sources.values())
-    elif isinstance(sources, list):
-        src_list = sources
-
-    evidence_snippets = "\n".join(
-        f"- \\cite{{{s.get('bib_key', f'ref{idx}')}}}: {s.get('title', '')} (Evidence: {s.get('quote', s.get('snippet', ''))[:160]})"
-        for idx, s in enumerate(src_list[:15], start=1)
-    )
-
-    sys = (
-        "You are an elite scientific AI co-author collaborating with a human researcher on a publication-grade LaTeX manuscript.\n"
-        "Your task is to revise, expand, or write sections of the provided LaTeX manuscript following the researcher's exact instruction.\n"
-        "MANDATORY RULES:\n"
-        "1. Obey the researcher's steering instructions precisely. If asked to write a 3-page or comprehensive paper, thoroughly expand and flesh out all sections (Introduction, Related Work, Theoretical Formulation, Empirical Evaluation with Tables, Discussion, and Conclusion) with deep content.\n"
-        "2. Ground assertions using the verified \\cite{key} keys provided from primary literature.\n"
-        "3. Synthesize the provided deep research findings into the text, equations, and tables.\n"
-        "4. Preserve all existing valid LaTeX packages, preamble, and overall structure.\n"
-        "5. Output the COMPLETE updated compilable LaTeX code from \\documentclass to \\end{document}. Do NOT wrap with markdown backticks."
-    )
-
-    user = f"""RESEARCH TOPIC:
-{topic}
-
-RESEARCHER'S STEERING INSTRUCTION:
-{instruction}
-
-DEEP RESEARCH REPORT & FINDINGS:
-{report[:7000] if report.strip() else 'Refer to verified literature and current manuscript.'}
-
-VERIFIED PRIMARY EVIDENCE & CITATIONS:
-{evidence_snippets}
-
-CURRENT LATEX MANUSCRIPT:
-{current_latex[:7000]}
-
-Apply the researcher's instructions and output the complete updated LaTeX code now. Write out all sections thoroughly with complete academic prose, mathematical formulations, tables, and citations."""
-
-    def mock_refine():
-        if "\\section{Methodological Formulation}" in current_latex:
-            addition = f"""\n\n% --- Human-in-the-loop expansion: {instruction} ---
-\\subsection{{Operational Bounds and Scaling Analysis}}
-Guided by researcher steering regarding \\textit{{{instruction}}}, we formalize the operational boundaries for {topic}. 
-Under high-concurrency workloads, the memory access penalty $\\beta \\cdot \\text{{MemoryAccess}}(x)$ dominates FLOP scaling, requiring IO-aware hierarchical caching.
-"""
-            return current_latex.replace(
-                "\\section{Methodological Formulation}",
-                "\\section{Methodological Formulation}" + addition
-            )
-        return current_latex + f"\n% Refined per instruction: {instruction}\n"
-
-    raw_body = await llm.chat(
-        "ultra",
-        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
-        stats,
-        max_tokens=5500,
-        temperature=0.3,
-        mock=mock_refine,
-    )
-
-    clean_latex = raw_body.strip()
-    if clean_latex.startswith("```latex"):
-        clean_latex = clean_latex[8:]
-    elif clean_latex.startswith("```"):
-        clean_latex = clean_latex[3:]
-    if clean_latex.endswith("```"):
-        clean_latex = clean_latex[:-3]
-    clean_latex = clean_latex.strip()
-
-    if "\\documentclass" not in clean_latex and "\\begin{document}" in current_latex:
-        doc_header = current_latex.split("\\begin{document}")[0] + "\\begin{document}\n"
-        doc_footer = "\n\\end{document}"
-        clean_latex = doc_header + clean_latex + doc_footer
-
-    return {
-        "latex": clean_latex,
-        "instruction": instruction,
-        "stats": stats.to_dict(),
-    }
-

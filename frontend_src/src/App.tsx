@@ -2445,11 +2445,10 @@ export default function App({ me, orcidBase, refreshMe }: AppProps) {
 
           {view === 'studio' && (
             <PaperStudio
-              // Only a real research run preselects a topic; the sample brief never does
-              topic={isLiveRun ? submittedQuery : ''}
-              reportText={isLiveRun ? liveReport : ''}
-              sources={isLiveRun ? currentSources : []}
+              // The research just run or being read opens first; the sample brief has no saved report
+              reportId={activeReportId}
               savedReports={libraryReports}
+              projects={projects}
               activeFileId={studioActiveFile}
               onSelectFile={setStudioActiveFile}
               onNotify={notify}

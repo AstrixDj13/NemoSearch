@@ -32,6 +32,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from . import auth as auth_module  # noqa: E402
 from . import network as network_module  # noqa: E402
+from . import papers as papers_module  # noqa: E402
 from .auth import Accounts, Unauthorized  # noqa: E402
 from .blobs import LocalBlobStore, content_disposition, open_blob_store  # noqa: E402
 from .config import settings  # noqa: E402
@@ -115,6 +116,7 @@ CurrentUser = Annotated[sa.Row, Depends(accounts.require_user)]
 
 app.include_router(auth_module.build_router(accounts))
 app.include_router(network_module.build_router(network, accounts))
+app.include_router(papers_module.build_router(papers_module.Papers(store, llm), accounts))
 
 
 class FollowUpRequest(BaseModel):
@@ -499,28 +501,7 @@ def exports_download(user: CurrentUser, export_id: str):
 
 
 # ------------------------------------------------ Paper Studio Endpoints
-from .latex import (  # noqa: E402
-    create_latex_zip,
-    generate_latex_paper,
-    get_all_templates,
-    refine_latex_paper,
-)
-
-
-class PaperGenerateRequest(BaseModel):
-    topic: str
-    report: str
-    sources: Any = []
-    template_id: str = "neurips"
-    custom_preamble: str = ""
-
-
-class PaperRefineRequest(BaseModel):
-    topic: str
-    current_latex: str
-    instruction: str
-    report: str = ""
-    sources: Any = []
+from .latex import create_latex_zip, get_all_templates  # noqa: E402
 
 
 class InstallTemplateRequest(BaseModel):
@@ -536,8 +517,6 @@ class ZipDownloadRequest(BaseModel):
     bibtex: str
 
 
-PaperGenerateRequest.model_rebuild()
-PaperRefineRequest.model_rebuild()
 InstallTemplateRequest.model_rebuild()
 ZipDownloadRequest.model_rebuild()
 
@@ -551,33 +530,6 @@ def paper_templates(user: CurrentUser):
 def install_template(user: CurrentUser, req: InstallTemplateRequest):
     tpl = store.install_template(user.id, req.name, req.doc_class, req.preamble, req.venue)
     return {"ok": True, "template": tpl}
-
-
-@app.post("/api/paper/generate")
-async def generate_paper(req: PaperGenerateRequest, user: CurrentUser):
-    await run_in_threadpool(_limit, user.id, "paper", settings.limit_research_per_day, "paper drafts")
-    custom = await run_in_threadpool(store.list_templates, user.id)
-    try:
-        res = await generate_latex_paper(
-            req.topic, req.report, req.sources, req.template_id, llm, req.custom_preamble, custom
-        )
-        return JSONResponse(res)
-    except Exception as e:  # noqa: BLE001
-        logging.exception("paper generation failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/api/paper/refine")
-async def refine_paper_endpoint(req: PaperRefineRequest, user: CurrentUser):
-    await run_in_threadpool(_limit, user.id, "paper_refine", settings.limit_research_per_day * 5, "paper refinements")
-    try:
-        res = await refine_latex_paper(
-            req.topic, req.current_latex, req.instruction, req.sources, llm, req.report
-        )
-        return JSONResponse(res)
-    except Exception as e:  # noqa: BLE001
-        logging.exception("paper refinement failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/api/paper/download_zip")

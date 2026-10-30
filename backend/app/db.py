@@ -169,6 +169,44 @@ paper_templates = sa.Table(
     sa.Column("created_at", ms, nullable=False),
 )
 
+# One paper per piece of research. In a project every member edits it and talks to the co-author together.
+papers = sa.Table(
+    "papers", metadata,
+    sa.Column("id", sa.String(40), primary_key=True),
+    sa.Column("owner_id", sa.String(40), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    sa.Column("project_id", sa.String(40), sa.ForeignKey("projects.id", ondelete="CASCADE"), index=True),
+    sa.Column("report_id", sa.String(40), sa.ForeignKey("reports.id", ondelete="SET NULL"), unique=True),
+    # What the paper is grounded in, copied when it was created so it survives the report being deleted
+    sa.Column("question", sa.Text, nullable=False, server_default=""),
+    sa.Column("brief", sa.Text, nullable=False, server_default=""),
+    sa.Column("sources_json", sa.Text, nullable=False, server_default="[]"),
+    sa.Column("template_id", sa.String(80), nullable=False, server_default="neurips"),
+    sa.Column("latex", sa.Text, nullable=False, server_default=""),
+    sa.Column("bibtex", sa.Text, nullable=False, server_default=""),
+    # Bumped on every change to latex/bibtex; edits name the version they started from
+    sa.Column("version", sa.Integer, nullable=False, server_default="0"),
+    # Set while the co-author is drafting or answering, so two people cannot start it at once
+    sa.Column("busy_by", sa.String(40)),
+    sa.Column("busy_since", ms),
+    sa.Column("busy_task", sa.String(200)),
+    sa.Column("created_at", ms, nullable=False),
+    sa.Column("updated_at", ms, nullable=False),
+)
+
+paper_messages = sa.Table(
+    "paper_messages", metadata,
+    sa.Column("id", sa.String(40), primary_key=True),
+    sa.Column("paper_id", sa.String(40), sa.ForeignKey("papers.id", ondelete="CASCADE"), nullable=False),
+    # None for the co-author's own messages, and for authors whose account was deleted (see `role`)
+    sa.Column("author_id", sa.String(40), sa.ForeignKey("users.id", ondelete="SET NULL")),
+    sa.Column("role", sa.String(10), nullable=False),  # 'author' | 'coauthor'
+    sa.Column("body", sa.Text, nullable=False),
+    # The paper version this message produced, when the co-author changed the paper
+    sa.Column("version", sa.Integer),
+    sa.Column("created_at", ms, nullable=False),
+    sa.Index("paper_messages_thread", "paper_id", "created_at"),
+)
+
 # ---------------------------------------------------------------- Network (public-facing)
 organizations = sa.Table(
     "organizations", metadata,

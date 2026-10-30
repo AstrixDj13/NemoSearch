@@ -1,5 +1,7 @@
 // Client for the NemoSearch server: accounts, private research (projects and history) and the Network.
-import type { AttachmentRecord, Project, ProjectDetail, ProjectMember, ProjectMessage, SavedReport, SavedSourceRecord, Source } from './data'
+import type {
+  AttachmentRecord, PaperDoc, PaperSummary, Project, ProjectDetail, ProjectMember, ProjectMessage, SavedReport, SavedSourceRecord, Source,
+} from './data'
 import type {
   AbuseReport, AuthConfig, Me, NetworkNotification, NetworkRequest, Organization, Person, PublicUser, RequestKind,
   Visibility, WorkDetail, WorkSummary,
@@ -85,6 +87,15 @@ export const api = {
 
   recordExport: (projectId: string | null, reportId: string | null, kind: string, filename: string, content?: string) =>
     request<{ id: string }>('/api/exports', json('POST', { projectId, reportId, kind, filename, content })),
+
+  // ---------------- Paper Studio
+  listPapers: () => request<PaperSummary[]>('/api/papers'),
+  openPaper: (reportId: string, templateId: string) => request<PaperDoc>('/api/papers', json('POST', { reportId, templateId })),
+  getPaper: (id: string, after?: number) => request<PaperDoc>(`/api/papers/${id}${after === undefined ? '' : `?after=${after}`}`),
+  draftPaper: (id: string, templateId: string) => request<PaperDoc>(`/api/papers/${id}/draft`, json('POST', { templateId })),
+  sendPaperMessage: (id: string, body: string) => request<PaperDoc>(`/api/papers/${id}/messages`, json('POST', { body })),
+  editPaper: (id: string, baseVersion: number, patch: { latex?: string; bibtex?: string; templateId?: string }) =>
+    request<PaperDoc>(`/api/papers/${id}`, json('PATCH', { baseVersion, ...patch })),
 }
 
 export const networkApi = {

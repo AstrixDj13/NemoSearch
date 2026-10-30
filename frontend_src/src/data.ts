@@ -95,6 +95,41 @@ export interface PaperTemplate {
   custom?: boolean
 }
 
+/** Paper Studio's paper for one piece of research; shared with everyone in the research's project */
+export interface PaperSummary {
+  id: string
+  reportId: string | null
+  projectId: string | null
+  title: string
+  question: string
+  templateId: string
+  /** Bumped on every change to the LaTeX or BibTeX; edits name the version they started from */
+  version: number
+  hasDraft: boolean
+  /** Set while the co-author is drafting or answering someone */
+  busy: { by: string; byId: string; task: string; since: number } | null
+  updatedAt: number
+}
+
+export interface PaperChatMessage {
+  id: string
+  role: 'author' | 'coauthor'
+  body: string
+  /** The paper version this co-author message produced, when it changed the paper */
+  version: number | null
+  createdAt: number
+  mine: boolean
+  /** Null for the co-author; a null id means the author's account was deleted */
+  author: { id: string | null; name: string | null } | null
+}
+
+export interface PaperDoc extends PaperSummary {
+  latex: string
+  bibtex: string
+  authors: { id: string; name: string; affiliation: string }[]
+  messages: PaperChatMessage[]
+}
+
 export interface SavedReport {
   id: string
   /** Short display title; editable */
